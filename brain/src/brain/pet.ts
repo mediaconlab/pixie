@@ -335,9 +335,8 @@ export function learnRhythm(prev: Rhythm, rows: ActivityRow[], days: DayWindow[]
     if (obs.length < 3) return old;
     const m = median(obs)!;
     const o = wrap && old < 6 ? old + 24 : old;
-    let v = o + (m - o) * 0.3;
-    if (wrap && v >= 24) v -= 24;
-    return Math.round(v * 4) / 4; // quarter hours
+    const v = Math.round((o + (m - o) * 0.3) * 4) / 4; // quarter hours first…
+    return wrap ? ((v % 24) + 24) % 24 : v; // …then wrap into [0, 24) (23.9 → 24 → 0)
   };
   return {
     wake_hour: blend(prev.wake_hour, wakes),

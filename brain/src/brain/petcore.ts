@@ -41,6 +41,11 @@ import {
 
 export const PET_TICK_MS = 3600_000;
 export const QUIET_CODING_WINDOW_MS = 14 * 86_400_000;
+/** A phone fix this fresh wins over the Mac's own (coarser) location. */
+export const PHONE_FIX_PRIORITY_MS = 3600_000;
+/** A quiet-type instruction this soon after a bubble "reply" means the reply was really a dismissal. */
+export const DISMISS_WINDOW_MS = 10_000;
+const DISMISSIVE: readonly string[] = ["quiet", "not_now", "stop", "less_needy"];
 const DAY = 86_400_000;
 
 export interface PetHost {
@@ -189,6 +194,9 @@ export class PetLife {
   // ---- surroundings -------------------------------------------------------------------------------------
 
   async onLocation(d: LocationUpdateData): Promise<void> {
+    const now = this.h.now();
+    if (d.source === "phone") this.kv.set("phone_fix_ts", now);
+    else if (now - this.kv.get<number>("phone_fix_ts", -Infinity) < PHONE_FIX_PRIORITY_MS) return;
     const prev = this.kv.get<{ lat: number; lon: number } | null>("location", null);
     // Only the latest coordinates (already re-rounded to 2 decimals on parse) are kept. No history.
     this.kv.set("location", { lat: d.lat, lon: d.lon });
@@ -242,17 +250,39 @@ export class PetLife {
 
   onPetEvent(d: PetEventData): void {
     const now = this.h.now();
-    this.sql.exec("INSERT INTO pet_log (kind, name, ref, ts) VALUES ('event', ?, ?, ?)", d.kind.slice(0, 40), d.thought_id ?? d.intent ?? null, now);
-    const userTouched = ["petted", "poked", "fed", "carried", "bubble_replied", "made_up", "reunion"].includes(d.kind);
+    let kind = d.kind;
+    // The reply was "be quiet" (the instruction can reach us just before the Mac's bubble event).
+    if (kind === "bubble_replied" && now - this.kv.get<number>("dismiss_obey_ts", -Infinity) <= DISMISS_WINDOW_MS) kind = "bubble_dismissed";
+    this.sql.exec("INSERT INTO pet_log (kind, name, ref, ts) VALUES ('event', ?, ?, ?)", kind.slice(0, 40), d.thought_id ?? d.intent ?? null, now);
+    const userTouched = ["petted", "poked", "fed", "carried", "bubble_replied", "made_up", "reunion"].includes(kind);
     const gain: Record<string, number> = { petted: 0.5, fed: 0.5, made_up: 1, bubble_replied: 0.5 };
-    if (!userTouched && !gain[d.kind]) return;
+    if (!userTouched && !gain[kind]) return;
     this.updateProfile((p) => {
       if (userTouched) noteContact(p, now, this.dayKey(now));
-      if (gain[d.kind]) {
-        addBond(p, gain[d.kind]!, this.dayKey(now));
+      if (gain[kind]) {
+        const applied = addBond(p, gain[kind]!, this.dayKey(now));
         p.feel.warm += 1;
+        if (kind === "bubble_replied") this.kv.set("bubble_reply", { ts: now, gain: applied, day: this.dayKey(now) });
       }
     });
+  }
+
+  /**
+   * A quiet / not now / stop / less needy right after a bubble "reply": re-label that reply as a dismissal
+   * (pet_log feeds the weekly chattiness check) and undo its bond / warmth gain. Runs inside updateProfile.
+   */
+  private undoBubbleReply(p: PetProfile, now: number): void {
+    this.kv.set("dismiss_obey_ts", now);
+    const r = this.kv.get<{ ts: number; gain: number; day: string } | null>("bubble_reply", null);
+    if (!r || now - r.ts > DISMISS_WINDOW_MS || now < r.ts) return;
+    this.kv.delete("bubble_reply");
+    const row = this.sql
+      .exec<{ id: number }>("SELECT id FROM pet_log WHERE kind = 'event' AND name = 'bubble_replied' AND ts >= ? ORDER BY id DESC LIMIT 1", r.ts)
+      .toArray()[0];
+    if (row) this.sql.exec("UPDATE pet_log SET name = 'bubble_dismissed' WHERE id = ?", row.id);
+    p.bond = Math.max(0, p.bond - r.gain);
+    if (p.bond_day === r.day) p.bond_today = Math.max(0, p.bond_today - r.gain);
+    p.feel.warm = Math.max(0, p.feel.warm - 1);
   }
 
   /** Something the user did (chat, state change while present) counts as contact. */
@@ -316,6 +346,7 @@ export class PetLife {
       p.obeyed[obeyKey] = now;
       for (const [k, ts] of Object.entries(p.obeyed)) if (ts != null && now - ts > 30 * DAY) delete p.obeyed[k];
       noteContact(p, now, this.dayKey(now));
+      if (DISMISSIVE.includes(pi.instruction)) this.undoBubbleReply(p, now);
       switch (pi.instruction) {
         case "quiet":
         case "not_now":
@@ -360,12 +391,15 @@ export class PetLife {
     });
     if (pi.instruction === "no_gossip" || pi.instruction === "gossip_ok") {
       this.refreshThoughts();
-      this.sendThoughts(false);
+      // A per-person block is enforced by the filtered thought list alone, so always re-send it then.
+      this.sendThoughts(!!pi.subject);
     }
     const pout = shouldPout({ instruction: pi.instruction, repeatWithin24h: repeat, aboutPerson: !!pi.subject, angry: isAngry(text), inMeeting });
     const macs = this.h.macs();
     const instruction: ObeyInstruction = pi.instruction;
-    if (macs.length) this.h.send(macs, "pet.obey", { instruction, until, pout });
+    // A gossip instruction about one person must not reach the Mac as pet.obey (it would toggle gossip globally).
+    const aboutPersonGossip = !!pi.subject && (instruction === "no_gossip" || instruction === "gossip_ok");
+    if (macs.length && !aboutPersonGossip) this.h.send(macs, "pet.obey", { instruction, until, pout });
     const happy = instruction === "more_chatty" || instruction === "gossip_ok";
     const say = ackLine(pi, text, this.h.random);
     this.h.perform(
@@ -660,7 +694,7 @@ export class PetLife {
   /** "Forget me": wipe the pet's history of the user; keep Pixie's own personality. */
   forget(): void {
     for (const t of ["activity_log", "pet_log", "thoughts"]) this.sql.exec(`DELETE FROM ${t}`);
-    for (const k of ["pet_diary", "location", "weather", "signals", "pet_state", "world_check", "world_quota", "thoughts_sent", "env_sent"]) this.kv.delete(k);
+    for (const k of ["pet_diary", "location", "weather", "signals", "pet_state", "world_check", "world_quota", "thoughts_sent", "env_sent", "phone_fix_ts", "bubble_reply", "dismiss_obey_ts"]) this.kv.delete(k);
     const old = this.profile();
     const fresh = normalizeProfile(null, this.h.now(), this.h.random);
     this.saveProfile({ ...fresh, traits: old.traits, seed: old.seed, born_ts: old.born_ts });

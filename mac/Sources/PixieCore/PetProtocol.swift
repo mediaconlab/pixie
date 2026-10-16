@@ -511,7 +511,8 @@ public enum PetIntent: String, Codable, CaseIterable, Sendable {
     case waking
     case ate
 
-    /// Routine moments use `pet.lines` when the bank has a line for them.
+    /// Routine moments use `pet.lines` when the bank has a line for them, unless the moment carries a
+    /// hint (weather change, sunset…): those go to the brain as `pet.speak` with the hint.
     public var isRoutine: Bool {
         switch self {
         case .sleepy, .waking, .ate, .weather, .reaction, .playfulBid: return true

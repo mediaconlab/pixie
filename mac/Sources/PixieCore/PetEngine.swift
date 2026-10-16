@@ -374,10 +374,18 @@ public struct PetEngine: Sendable {
         var s = state
         if let seed { s.rng = PixieRandom(seed: seed) }
         self.state = s
-        self.timeZone = timeZone
+        // A restored env.update's zone wins over the device's own (see setEnv).
+        let zone = PetEngine.zone(s.knowledge.env?.tz) ?? timeZone
+        self.timeZone = zone
         var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = timeZone
+        cal.timeZone = zone
         calendar = cal
+    }
+
+    /// A valid IANA zone from `env.update.tz`, or nil.
+    static func zone(_ tz: String?) -> TimeZone? {
+        guard let tz, !tz.isEmpty else { return nil }
+        return TimeZone(identifier: tz)
     }
 
     // MARK: Derived values
@@ -471,6 +479,7 @@ public struct PetEngine: Sendable {
         let t = now.timeIntervalSince1970
         let old = state.knowledge.env?.weather?.condition
         state.knowledge.env = e
+        if let zone = PetEngine.zone(e.tz), zone.identifier != timeZone.identifier { timeZone = zone }
         guard let cond = e.weather?.condition, cond != old else { return }
         state.life.lastWeather = cond
         guard old != nil else { return } // the first report after launch is not news
@@ -1287,7 +1296,10 @@ public struct PetEngine: Sendable {
         // Not strong enough for this user's threshold: the moment passes silently.
         guard desire >= state.speech.threshold else { return }
 
-        if item.intent.isRoutine, let bank = state.knowledge.lines[item.intent.rawValue], !bank.isEmpty {
+        // A hinted moment (weather change, sunset…) is about something specific: let the brain voice it.
+        // The local bank is only for hint-less routine moments (or intents pet.speak cannot carry).
+        let useBank = item.hint == nil || !item.intent.brainVoiced
+        if useBank, item.intent.isRoutine, let bank = state.knowledge.lines[item.intent.rawValue], !bank.isEmpty {
             let r = state.rng.unit()
             let i = min(bank.count - 1, Int(r * Double(bank.count)))
             recordShown(intent: item.intent, thoughtID: nil, t: t)

@@ -150,6 +150,16 @@ describe("location + weather", () => {
     expect(h.of("env.update").at(-1)!.data.weather).toBeNull();
     expect(h.fetches).toHaveLength(1); // backoff: hello right after a failure does not refetch
   });
+  it("ignores the Mac's location while a phone fix is under an hour old", async () => {
+    await h.send("and1", "android", "location.update", { lat: 28.46, lon: 77.03, accuracy_m: 50, source: "phone" });
+    h.advance(59 * 60_000);
+    await h.send("mac1", "mac", "location.update", { lat: 19.07, lon: 72.88, accuracy_m: 5000, source: "mac" });
+    expect(h.core["kv"].get("location", null)).toEqual({ lat: 28.46, lon: 77.03 });
+    expect(h.fetches).toHaveLength(1);
+    h.advance(2 * 60_000);
+    await h.send("mac1", "mac", "location.update", { lat: 19.07, lon: 72.88, accuracy_m: 5000, source: "mac" });
+    expect(h.core["kv"].get("location", null)).toEqual({ lat: 19.07, lon: 72.88 });
+  });
   it("forget clears the location", async () => {
     await h.send("and1", "android", "location.update", { lat: 28.46, lon: 77.03, accuracy_m: 500, source: "phone" });
     h.core.forget();
@@ -195,11 +205,18 @@ describe("instructions in user.say", () => {
   });
   it("don't gossip about <name> → per-contact blocklist, no pout; gossip stays enabled", async () => {
     await h.say("don't gossip about Rahul");
-    expect(h.of("pet.obey")[0]!.data).toEqual({ instruction: "no_gossip", until: null, pout: false });
+    // Per-person: no pet.obey (the Mac would turn gossip off globally); the filtered thoughts are re-sent instead.
+    expect(h.of("pet.obey")).toHaveLength(0);
+    expect(h.of("pet.thoughts")).toHaveLength(1);
     const p = h.core.pet.profile();
     expect(p.gossip_block).toEqual([{ key: "rahul", label: "rahul" }]);
     expect(p.gossip_enabled).toBe(true);
+    await h.say("you can gossip about Rahul again");
+    expect(h.of("pet.obey")).toHaveLength(0);
+    expect(h.of("pet.thoughts")).toHaveLength(2);
+    expect(h.core.pet.profile().gossip_block).toEqual([]);
     await h.say("no gossip");
+    expect(h.of("pet.obey")[0]!.data).toMatchObject({ instruction: "no_gossip", until: null });
     expect(h.core.pet.profile().gossip_enabled).toBe(false);
     await h.say("gossip is fine");
     expect(h.core.pet.profile().gossip_enabled).toBe(true);
@@ -253,6 +270,55 @@ describe("pet.appraisal", () => {
   it("bond gains are capped per day", async () => {
     for (let i = 0; i < 15; i++) await h.say("love you pixie!!");
     expect(h.core.pet.profile().bond).toBe(15);
+  });
+});
+
+describe("bubble replies that were really dismissals", () => {
+  const outcomes = () => Object.fromEntries(h.sql.exec<{ name: string; n: number }>("SELECT name, COUNT(*) AS n FROM pet_log WHERE kind = 'event' GROUP BY name").toArray().map((r) => [r.name, Number(r.n)]));
+  for (const text of ["be quiet", "not now", "stop", "be less needy"]) {
+    it(`"${text}" within 10 s of bubble_replied → bubble_dismissed, bond gain undone`, async () => {
+      const before = h.core.pet.profile().bond;
+      await h.send("mac1", "mac", "pet.event", { kind: "bubble_replied", intent: "weather" });
+      expect(h.core.pet.profile().bond).toBe(before + 0.5);
+      h.advance(5_000);
+      await h.say(text);
+      expect(outcomes()).toMatchObject({ bubble_dismissed: 1 });
+      expect(outcomes().bubble_replied).toBeUndefined();
+      expect(h.core.pet.profile().bond).toBe(before);
+      expect(h.core.pet.profile().bond_today).toBe(0);
+    });
+  }
+  it("the instruction arriving just before the Mac's reply event also counts", async () => {
+    const before = h.core.pet.profile().bond;
+    await h.say("be quiet");
+    h.advance(1_000);
+    await h.send("mac1", "mac", "pet.event", { kind: "bubble_replied", intent: "weather" });
+    expect(outcomes()).toMatchObject({ bubble_dismissed: 1 });
+    expect(h.core.pet.profile().bond).toBe(before);
+  });
+  it("after 10 s, or for other instructions, the reply stands", async () => {
+    await h.send("mac1", "mac", "pet.event", { kind: "bubble_replied" });
+    h.advance(11_000);
+    await h.say("be quiet");
+    h.advance(11_000);
+    await h.send("mac1", "mac", "pet.event", { kind: "bubble_replied" });
+    h.advance(11_000);
+    await h.send("mac1", "mac", "pet.event", { kind: "bubble_replied" });
+    h.advance(2_000);
+    await h.say("talk to me more");
+    expect(outcomes()).toMatchObject({ bubble_replied: 3 });
+    expect(outcomes().bubble_dismissed).toBeUndefined();
+  });
+  it("re-labelled replies count as dismissed in the weekly chattiness check", async () => {
+    const before = h.core.pet.profile().traits.chattiness;
+    for (let i = 0; i < 7; i++) {
+      await h.send("mac1", "mac", "pet.event", { kind: "bubble_replied" });
+      h.advance(3_000);
+      await h.say(i % 2 ? "not now" : "stop");
+      h.advance(60_000);
+    }
+    await h.core.learn();
+    expect(h.core.pet.profile().traits.chattiness).toBeLessThan(before);
   });
 });
 

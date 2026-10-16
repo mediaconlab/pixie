@@ -227,6 +227,21 @@ describe("rhythm learning", () => {
     expect(rr.wake_hour).toBeCloseTo(7, 0);
     expect(rr.sleep_hour).toBeCloseTo(2, 0);
   });
+  it("rounds to quarter hours before wrapping, so a late bedtime never comes out as 24", () => {
+    const rows: Array<{ activity: string; ts: number }> = [];
+    for (let i = 0; i < 5; i++) {
+      rows.push({ activity: "browsing", ts: at(i, 23, 50) });
+      rows.push({ activity: "away", ts: at(i + 1, 0, 15) }); // to bed at 00:15 (24.25)
+    }
+    // 23.75 + (24.25 - 23.75) * 0.3 = 23.9 → rounds to 24 → wraps to 0 (wrapping first gave 24)
+    const r = learnRhythm({ ...DEFAULT_RHYTHM, sleep_hour: 23.75 }, rows, days, lh);
+    expect(r.sleep_hour).toBe(0);
+    for (const v of Object.values(r)) {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThan(24);
+      expect(v * 4).toBe(Math.round(v * 4));
+    }
+  });
   it("pet wake signals count as waking up", () => {
     const sig = [0, 1, 2, 3].map((i) => at(i, 6));
     const r = learnRhythm(DEFAULT_RHYTHM, [], days, lh, sig);

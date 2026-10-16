@@ -252,6 +252,36 @@ final class PetEngineTests: XCTestCase {
         XCTAssertEqual(e.state.speech.linesToday, 1)
     }
 
+    func testHintedRoutineMomentAsksTheBrain() {
+        var e = makeEngine()
+        e.setLines(PetLinesData(lines: ["weather": [PetLine(text: "ooh, weather!", emotion: .surprised)]]))
+        let t = t0 + 10
+        e.queue(.weather, hint: "the sun is setting", desire: 0.9, ttl: 600, t: t)
+        let out = run(&e, from: t, seconds: 2, idleCtx(10))
+        XCTAssertTrue(out.contains(.speak(PetSpeakData(intent: "weather", hint: "the sun is setting"))))
+        XCTAssertFalse(out.contains { if case .localLine = $0 { return true }; return false })
+        XCTAssertEqual(e.state.speech.linesToday, 0) // counted when the brain answers
+        _ = e.speakAnswered(PetSpeakData(intent: "weather", hint: "the sun is setting"), said: true, now: Date(timeIntervalSince1970: t + 3))
+        XCTAssertEqual(e.state.speech.linesToday, 1)
+    }
+
+    func testEnvTimeZoneDrivesTheEngine() {
+        var e = makeEngine()
+        let now = Date(timeIntervalSince1970: t0 + 5)
+        XCTAssertEqual(e.timeZone.identifier, "UTC")
+        e.setEnv(PetEnvData(tz: "Asia/Kolkata"), now: now)
+        XCTAssertEqual(e.timeZone.identifier, "Asia/Kolkata")
+        // 15:00 UTC is 20:30 in Kolkata.
+        XCTAssertEqual(e.localHour(now), 20.5, accuracy: 0.01)
+        // Missing or invalid zones keep the current one.
+        e.setEnv(PetEnvData(), now: now)
+        e.setEnv(PetEnvData(tz: "Not/AZone"), now: now)
+        XCTAssertEqual(e.timeZone.identifier, "Asia/Kolkata")
+        // A restored state keeps the brain's zone.
+        let restored = PetEngine(state: e.state, timeZone: utc)
+        XCTAssertEqual(restored.timeZone.identifier, "Asia/Kolkata")
+    }
+
     func testBrainIntentSendsSpeakWithThought() {
         var e = makeEngine()
         let t = t0 + 10
