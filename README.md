@@ -21,11 +21,15 @@ The wire contract between all of them is [`PROTOCOL.md`](PROTOCOL.md).
 
 ## What Pixie may decide alone
 
-| Tier | Examples |
-| --- | --- |
-| Auto | Hold low-priority messages during meetings, batch them into a digest, set reminders, pause commentary on calls |
-| Ask first | WhatsApp replies, call-backs, code patches |
-| Never | Payments, passwords, deleting things, account or system settings, sending anything without your tap |
+The orchestrator variable `AUTONOMY` in `brain/wrangler.jsonc` sets the level. It is **`full`**: no topic is forbidden, and messages you ask Pixie to send go out without an approval tap. Set it to `guarded` and redeploy to bring back the original rules.
+
+| Action | `full` (current) | `guarded` |
+| --- | --- | --- |
+| Hold or digest messages, set reminders, pause commentary | Automatic | Automatic |
+| WhatsApp reply you ask for ("tell Mom I'm on my way") | Sent immediately | Ask first |
+| Reply Pixie drafts by itself for an incoming message | Ask first | Ask first |
+| Call-backs, code patches | Ask first | Ask first |
+| Payments, passwords, deleting, settings | Not blocked; Pixie has no integration for these yet | Never |
 
 ## Privacy
 

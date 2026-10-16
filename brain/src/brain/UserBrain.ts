@@ -31,6 +31,7 @@ export class UserBrain extends DurableObject<Env> {
       embedModel: env.EMBED_MODEL,
     });
     this.core = new BrainCore({
+      autonomy: env.AUTONOMY === "guarded" ? "guarded" : "full",
       sql: ctx.storage.sql,
       ai: this.ai,
       devices: () => this.connections(),

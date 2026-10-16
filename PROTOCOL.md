@@ -110,6 +110,9 @@ payload shapes by proposal kind:
 
 ## 3. Decision tiers (enforced in brain code, not by the model)
 
+The brain env var `AUTONOMY` picks the policy: `guarded` is the table below; `full` drops the never tier and sends user-requested `whatsapp.reply` directly (`bot.execute` + `bot.auto` with `action: "message.sent"`), without a `bot.propose`.
+
+
 | Tier | Brain behaviour |
 | --- | --- |
 | auto | executes, then sends `bot.auto` so the user knows |

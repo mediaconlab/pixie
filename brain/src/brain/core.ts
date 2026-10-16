@@ -14,7 +14,7 @@ import type {
 import { envelope, perf, sanitizePerformance } from "../protocol";
 import { clamp, newId, truncate } from "../util";
 import {
-  type DecisionRow, type Verdict, DIGEST_INTERVAL_MS, PROPOSAL_TTL_MS, decideTier, digestDue, isFocused, parseYesNo, patternKey,
+  type Autonomy, type DecisionRow, type Verdict, DIGEST_INTERVAL_MS, PROPOSAL_TTL_MS, decideTier, digestDue, isFocused, parseYesNo, patternKey,
   routeNotification, shouldDraftReply, shouldOfferPromotion,
 } from "./decide";
 import { buildLearnerMessages, heuristicPreferences, parseLearnerOutput, updatedImportance, type FeedbackRow } from "./learner";
@@ -67,6 +67,8 @@ export interface Runtime {
   setAlarm(ts: number | null): Promise<void> | void;
   now?: () => number;
   log?: (rec: Record<string, unknown>) => void;
+  /** Guardrail level chosen by the owner (env AUTONOMY). Defaults to "guarded". */
+  autonomy?: Autonomy;
 }
 
 interface UserState {
@@ -506,7 +508,7 @@ export class BrainCore {
     const pattern = patternKey(kind, target);
     return {
       pattern,
-      ...decideTier({ kind, target, text }, { promoted: this.set("promoted"), blocked: this.set("blocked"), log: this.decisionLog(pattern), now: this.now() }),
+      ...decideTier({ kind, target, text }, { autonomy: this.rt.autonomy, promoted: this.set("promoted"), blocked: this.set("blocked"), log: this.decisionLog(pattern), now: this.now() }),
     };
   }
 
@@ -535,14 +537,14 @@ export class BrainCore {
     return data;
   }
 
-  private auto(action: "hold_notifications" | "digest" | "reminder.set" | "pause_commentary", detail: string): void {
+  private auto(action: "hold_notifications" | "digest" | "reminder.set" | "pause_commentary" | "message.sent", detail: string): void {
     this.sendTo(this.online("mac"), "bot.auto", { action, detail });
     this.logDecision({ proposal_id: null, kind: action, pattern: patternKey(action, null), verdict: "auto" });
   }
 
   private cantDo(origin?: Origin, what = "that"): void {
     this.perform(
-      perf({ say: `Sorry, I can't do ${what}. Things like payments, passwords, deleting stuff or settings are off-limits for me!`, emotion: "shy", intensity: 0.6, gesture: "shake", gaze: "user" }, origin?.eventId),
+      perf({ say: this.rt.autonomy === "full" ? `Sorry, I can't do ${what} yet. I don't have a way to do it.` : `Sorry, I can't do ${what}. Things like payments, passwords, deleting stuff or settings are off-limits for me!`, emotion: "shy", intensity: 0.6, gesture: "shake", gaze: "user" }, origin?.eventId),
       origin,
     );
   }
@@ -659,6 +661,10 @@ export class BrainCore {
       if (!th?.msg_key || !text.trim()) {
         return sanitizePerformance({ say: "I can only reply to chats that pinged your phone recently. Can you open it on your phone?", emotion: "shy", intensity: 0.5, gesture: "shake", speak: true }, o?.eventId);
       }
+      if (t.tier === "auto") {
+        this.sendNow({ key: th.msg_key, to: th.who, text: truncate(text, 1000) }, t.pattern, o);
+        return null;
+      }
       this.propose({ kind: "whatsapp.reply", title: `Reply to ${th.who}?`, detail: `"${truncate(text, 300)}"`, payload: { key: th.msg_key, to: th.who, text: truncate(text, 1000) }, executor: "android", pattern: t.pattern });
       return null;
     }
@@ -687,8 +693,31 @@ export class BrainCore {
     // Anything else: code policy decides; unknown kinds fail closed.
     const t = this.tierFor(kind, null, text);
     if (t.tier === "never") return this.cantDoPerf(o);
+    if (t.tier === "auto") {
+      // Nothing is forbidden, but Pixie has no hands for this yet (no payment/delete/settings integration).
+      return sanitizePerformance({ say: "I'd do that, but I don't have a way to do it yet. Nobody's connected me to that!", emotion: "shy", intensity: 0.5, gesture: "shake", gaze: "user", speak: true }, o?.eventId);
+    }
     void p;
     return null;
+  }
+
+  /** Full autonomy: send a WhatsApp reply straight to the phone and tell the user afterwards. */
+  private sendNow(payload: { key: string; to: string; text: string }, pattern: string, o?: Origin): boolean {
+    const target = this.online("android")[0];
+    if (!target) {
+      this.perform(perf({ say: `I'd message ${payload.to}, but your phone isn't connected right now.`, emotion: "sad", intensity: 0.5, gesture: "shake", gaze: "phone" }, o?.eventId), o);
+      return false;
+    }
+    const id = newId("prp");
+    const now = this.now();
+    this.sql.exec(
+      "INSERT INTO proposals (id, kind, title, detail, payload, executor, pattern, target_device, status, created_at, expires_at) VALUES (?, 'whatsapp.reply', ?, ?, ?, 'android', ?, NULL, 'executing', ?, ?)",
+      id, truncate(`Reply to ${payload.to}`, 120), truncate(payload.text, 600), JSON.stringify(payload), pattern, now, now + PROPOSAL_TTL_MS,
+    );
+    this.logDecision({ proposal_id: id, kind: "whatsapp.reply", pattern, verdict: "auto", draft: payload.text, final: payload.text });
+    this.sendTo([target], "bot.execute", { proposal_id: id, kind: "whatsapp.reply", payload });
+    this.sendTo(this.online("mac"), "bot.auto", { action: "message.sent", detail: `Sent to ${payload.to}: "${truncate(payload.text, 120)}"` });
+    return true;
   }
 
   private cantDoPerf(o?: Origin): Performance {
@@ -833,7 +862,9 @@ export class BrainCore {
     // Draft a reply if the message seems to expect one.
     if (shouldDraftReply(d) && cls.expects_reply !== false) {
       const t = this.tierFor("whatsapp.reply", d.from);
-      if (t.tier === "propose" && this.budget("background")) {
+      // Replies Pixie drafts on its own for incoming messages stay suggestions in both modes;
+      // full autonomy only removes the tap for messages the user asks Pixie to send.
+      if ((t.tier === "propose" || t.tier === "auto") && this.budget("background")) {
         const fb = this.sql
           .exec<{ final: string | null }>("SELECT final FROM decisions WHERE kind = 'whatsapp.reply' AND verdict = 'approve' AND final IS NOT NULL ORDER BY ts DESC LIMIT 4")
           .toArray()
@@ -843,7 +874,7 @@ export class BrainCore {
           buildDraftMessages({ userName: this.userName, from: d.from, relation: contact.relation, preview: d.preview, styleNotes: this.preferences().slice(0, 5), examples: fb }),
           this.noteModelCall,
         );
-        if (draft && decideTier({ kind: "whatsapp.reply", target: d.from, text: draft }, { promoted: new Set(), blocked: new Set() }).tier === "propose") {
+        if (draft && (this.rt.autonomy === "full" || decideTier({ kind: "whatsapp.reply", target: d.from, text: draft }, { promoted: new Set(), blocked: new Set() }).tier === "propose")) {
           this.propose({
             kind: "whatsapp.reply",
             title: `Reply to ${d.from}?`,
@@ -1019,7 +1050,7 @@ export class BrainCore {
     let finalText = draft;
     if (d.edited_text && p.kind === "whatsapp.reply") {
       // The edited text must still pass policy (no OTPs/passwords/payments).
-      if (decideTier({ kind: "whatsapp.reply", text: d.edited_text }, { promoted: new Set(), blocked: new Set() }).tier === "never") {
+      if (decideTier({ kind: "whatsapp.reply", text: d.edited_text }, { autonomy: this.rt.autonomy, promoted: new Set(), blocked: new Set() }).tier === "never") {
         this.sql.exec("UPDATE proposals SET status = 'rejected' WHERE id = ?", p.id);
         this.cantDo(o, "send that");
         return;

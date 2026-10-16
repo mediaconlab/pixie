@@ -18,6 +18,6 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserBrain"] }],
   "triggers": { "crons": ["30 20 * * *"] },
-  "vars": { "ALLOW_SIGNUP": "0" },
+  "vars": { "ALLOW_SIGNUP": "0", "AUTONOMY": "full" },
   "observability": { "enabled": true }
 }

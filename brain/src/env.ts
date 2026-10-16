@@ -10,4 +10,6 @@ export interface Env {
   MODELS?: string;
   VISION_MODEL?: string;
   EMBED_MODEL?: string;
+  /** "full" (default): no approval or forbidden-topic guardrails. "guarded": the original tiers. */
+  AUTONOMY?: string;
 }

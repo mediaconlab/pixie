@@ -12,7 +12,7 @@ interface Sent {
 // 12:00 IST
 const T0 = Date.UTC(2026, 9, 16, 6, 30);
 
-function setup() {
+function setup(opts: { autonomy?: "full" | "guarded" } = {}) {
   const sql = memorySql();
   const ai = new FakeAi();
   const sent: Sent[] = [];
@@ -28,6 +28,7 @@ function setup() {
   };
   const logs: Array<Record<string, unknown>> = [];
   const core = new BrainCore({
+    autonomy: opts.autonomy,
     sql, ai,
     devices: () => [...conns],
     registeredDevices: async () => conns.map((c) => ({ id: c.id, kind: c.kind, name: c.name })),
@@ -617,5 +618,57 @@ describe("nightly learn", () => {
     expect(dump.preferences.map((p: any) => p.text).join(" ")).toMatch(/too formal/);
     const after = Number(h.sql.exec<{ importance: number }>("SELECT importance FROM contacts WHERE name_key = 'rahul'").toArray()[0]!.importance);
     expect(after).toBeGreaterThan(before);
+  });
+});
+
+describe("full autonomy (owner turned guardrails off)", () => {
+  it("a reply the user asks for is sent straight to the phone, no approval card", async () => {
+    const h = setup({ autonomy: "full" });
+    h.connect("mac1", "mac");
+    h.connect("and1", "android");
+    routedAi(h, { urgency: 0.2, expects: false });
+    await h.send("and1", "android", "phone.message", { app: "whatsapp", from: "Mom", conversation: null, preview: "hi", is_group: false, key: "mk", replyable: true });
+    routedAi(h, { say: "Sending!", extra: { action: { kind: "whatsapp.reply", to: "Mom", text: "On my way!" } } });
+    h.clear();
+    await h.send("mac1", "mac", "user.say", { text: "tell mom I'm on my way", via: "typed" });
+    expect(h.of("bot.propose")).toHaveLength(0);
+    const ex = h.of("bot.execute");
+    expect(ex).toHaveLength(1);
+    expect(ex[0]!.device).toBe("and1");
+    expect(ex[0]!.data).toMatchObject({ kind: "whatsapp.reply", payload: { key: "mk", to: "Mom", text: "On my way!" } });
+    expect(h.of("bot.auto")[0]!.data).toMatchObject({ action: "message.sent" });
+  });
+
+  it("text mentioning an OTP or password is no longer blocked", async () => {
+    const h = setup({ autonomy: "full" });
+    h.connect("mac1", "mac");
+    h.connect("and1", "android");
+    routedAi(h, { urgency: 0.2, expects: false });
+    await h.send("and1", "android", "phone.message", { app: "whatsapp", from: "Rahul", conversation: null, preview: "hey", is_group: false, key: "rk", replyable: true });
+    routedAi(h, { say: "Done", extra: { action: { kind: "whatsapp.reply", to: "Rahul", text: "The wifi password is sunshine" } } });
+    h.clear();
+    await h.send("mac1", "mac", "user.say", { text: "send rahul the wifi password", via: "typed" });
+    expect(h.of("bot.execute")).toHaveLength(1);
+  });
+
+  it("payments aren't refused as forbidden; Pixie says it has no way to do them yet", async () => {
+    const h = setup({ autonomy: "full" });
+    h.connect("mac1", "mac");
+    routedAi(h, { say: "On it", extra: { action: { kind: "payment", to: "Rahul", text: "pay 500" } } });
+    h.clear();
+    await h.send("mac1", "mac", "user.say", { text: "pay rahul 500", via: "typed" });
+    const say = h.of("bot.perform").map((p) => String(p.data.say)).join(" ");
+    expect(say).toMatch(/don't have a way/);
+    expect(say).not.toMatch(/off-limits/);
+  });
+
+  it("replies Pixie drafts by itself for incoming messages are still suggestions", async () => {
+    const h = setup({ autonomy: "full" });
+    h.connect("mac1", "mac");
+    h.connect("and1", "android");
+    routedAi(h, { urgency: 0.3, expects: true, draft: "Yes, coming at 8!" });
+    await h.send("and1", "android", "phone.message", { app: "whatsapp", from: "Rahul", conversation: null, preview: "Coming for dinner?", is_group: false, key: "k1", replyable: true });
+    expect(h.of("bot.execute")).toHaveLength(0);
+    expect(h.of("bot.propose")[0]!.data).toMatchObject({ kind: "whatsapp.reply" });
   });
 });

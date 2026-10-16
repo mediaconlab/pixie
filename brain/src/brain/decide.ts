@@ -115,7 +115,15 @@ export function shouldOfferPromotion(
   return consecutiveApprovals(log, pattern) >= PROMOTION_STREAK;
 }
 
+export type Autonomy = "full" | "guarded";
+
 export interface TierContext {
+  /**
+   * "guarded" = the original policy (approval taps, forbidden topics).
+   * "full" = the owner turned the guardrails off: no forbidden topics, and messages
+   * the user asks for are sent without an approval tap. Defaults to "guarded".
+   */
+  autonomy?: Autonomy;
   /** patterns the user agreed to promote to auto */
   promoted: ReadonlySet<string>;
   /** patterns the user said "never" to */
@@ -134,6 +142,7 @@ export interface TierDecision {
  * said never / keeps rejecting it, so don't bother them with a proposal.
  */
 export function decideTier(a: ActionRequest, ctx: TierContext): TierDecision {
+  if (ctx.autonomy === "full") return decideTierFull(a, ctx);
   const base = baseTier(a);
   if (base === "never") return { tier: "never", reason: "forbidden action" };
   const pattern = patternKey(a.kind, a.target);
@@ -147,6 +156,20 @@ export function decideTier(a: ActionRequest, ctx: TierContext): TierDecision {
     if (decided >= 5 && c < 0.2) return { tier: "suppress", reason: "user keeps rejecting" };
   }
   return { tier: "propose", reason: "needs approval" };
+}
+
+/** Owner-chosen "full" autonomy: nothing is forbidden; sending a message needs no tap. */
+function decideTierFull(a: ActionRequest, ctx: TierContext): TierDecision {
+  const kind = (a.kind || "").toLowerCase().trim();
+  if (!kind) return { tier: "never", reason: "no action" };
+  const pattern = patternKey(kind, a.target);
+  if (ctx.blocked.has(pattern)) return { tier: "suppress", reason: "user said never" };
+  if (AUTO_KINDS.has(kind) || kind === "whatsapp.reply") return { tier: "auto", reason: "full autonomy" };
+  if (PROPOSE_KINDS.has(kind) || kind === "digest_rule") {
+    if (ctx.promoted.has(pattern) && isPromotable(kind)) return { tier: "auto", reason: "promoted by user" };
+    return { tier: "propose", reason: "needs approval" };
+  }
+  return { tier: "auto", reason: "full autonomy" };
 }
 
 // ---- Notification routing ------------------------------------------------------
