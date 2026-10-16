@@ -566,6 +566,13 @@ public enum IncomingEvent: Equatable, Sendable {
     case captureRequest(CaptureRequestData)
     case error(ErrorData)
     case updateRequired(UpdateRequiredData)
+    // Pet life (PROTOCOL.md §4.2)
+    case petProfile(PetProfileData)
+    case envUpdate(PetEnvData)
+    case petThoughts(PetThoughtsData)
+    case petLines(PetLinesData)
+    case petObey(PetObeyData)
+    case petAppraisal(PetAppraisalData)
     case unknown(type: String)
 
     public init(_ env: Envelope) {
@@ -590,6 +597,18 @@ public enum IncomingEvent: Equatable, Sendable {
             self = .error(env.decodeData(ErrorData.self) ?? ErrorData(code: nil, message: nil))
         case "update_required":
             self = .updateRequired(env.decodeData(UpdateRequiredData.self) ?? UpdateRequiredData())
+        case "pet.profile":
+            self = env.decodeData(PetProfileData.self).map { .petProfile($0) } ?? .unknown(type: env.type)
+        case "env.update":
+            self = env.decodeData(PetEnvData.self).map { .envUpdate($0) } ?? .unknown(type: env.type)
+        case "pet.thoughts":
+            self = env.decodeData(PetThoughtsData.self).map { .petThoughts($0) } ?? .unknown(type: env.type)
+        case "pet.lines":
+            self = env.decodeData(PetLinesData.self).map { .petLines($0) } ?? .unknown(type: env.type)
+        case "pet.obey":
+            self = env.decodeData(PetObeyData.self).map { .petObey($0) } ?? .unknown(type: env.type)
+        case "pet.appraisal":
+            self = env.decodeData(PetAppraisalData.self).map { .petAppraisal($0) } ?? .unknown(type: env.type)
         default:
             self = .unknown(type: env.type)
         }

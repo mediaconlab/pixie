@@ -3,9 +3,10 @@ import CoreGraphics
 import PixieCore
 import SwiftUI
 
-/// Drives the character. Discrete events (blinks, glances, gestures, emotion changes) are stored as
-/// timestamps here; `CharacterView` turns them into continuous motion inside a TimelineView, so
-/// idle life (breathing, blinking, glancing, dozing) runs with zero network.
+/// Drives the character. Discrete events (blinks, glances, gestures, emotion changes, pet behaviours and
+/// cues) are stored as timestamps here; `CharacterView` turns them into continuous motion inside a
+/// TimelineView. The pet's phase, behaviour, baseline emotion and cues come from the PixieCore engine via
+/// `PetBodyController`; brain performances layer on top while they hold.
 @MainActor
 final class AvatarModel: ObservableObject {
     // Expression
@@ -25,6 +26,22 @@ final class AvatarModel: ObservableObject {
     @Published private(set) var talking = false
     @Published private(set) var lastWordAt: Date = .distantPast
 
+    // Pet body (from the engine)
+    @Published private(set) var petPhase: PetPhase = .awake
+    @Published private(set) var phaseStart: Date = .distantPast
+    @Published private(set) var behaviour: PetBehaviour = .idleBreathe
+    @Published private(set) var behaviourStart: Date = Date()
+    @Published private(set) var cue: PetCue?
+    @Published private(set) var cueStart: Date = .distantPast
+    @Published var windowStyle: PetWindowStyle = .day
+    @Published var festive = false
+    /// True while the panel is fully covered or off-screen: the animation timeline pauses.
+    @Published var hidden = false
+    @Published private(set) var carried = false
+    @Published private(set) var pettingNow = false
+    /// A hover stroke keeps the "being petted" face until then (read per frame, so not published).
+    private(set) var strokeUntil: Date = .distantPast
+
     // Status badges
     @Published private(set) var dozing = false
     @Published var eyeIndicator = false
@@ -34,11 +51,19 @@ final class AvatarModel: ObservableObject {
     /// Character centre in screen coordinates (set by the panel controller) for cursor gaze.
     var screenCenter: CGPoint = .zero
 
-    // Interaction hooks wired by the panel controller.
+    // Interaction hooks wired by the panel controller and the app controller.
     var onTap: (() -> Void)?
     var onDragBegan: (() -> Void)?
     var onDragChanged: (() -> Void)?
     var onDragEnded: (() -> Void)?
+    /// A press ended without dragging (the panel stops capturing the mouse).
+    var onPressEnded: (() -> Void)?
+    var onPoke: (() -> Void)?
+    var onPet: (() -> Void)?
+    var onCarry: (() -> Void)?
+    var onFeed: (() -> Void)?
+    /// Something needs Pixie (a notice, a performance): wakes it unless the user sent it to sleep.
+    var onWake: (() -> Void)?
 
     private var ttsTalking = false
     private var typingTalking = false
@@ -46,10 +71,11 @@ final class AvatarModel: ObservableObject {
     private var nextGlance = Date().addingTimeInterval(12)
     private var emotionHoldUntil: Date = .distantPast
     private var gazeHoldUntil: Date = .distantPast
-    private var lastPixieActivity = Date()
+    private var baseEmotion: Emotion = .neutral
+    private var baseIntensity: Double = 0.5
     private var timer: Timer?
-
-    static let dozeAfter: TimeInterval = 10 * 60
+    private var pressTimer: Timer?
+    private var pressTicks = 0
 
     init() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
@@ -97,19 +123,102 @@ final class AvatarModel: ObservableObject {
         lastWordAt = Date()
     }
 
-    /// Any user interaction with Pixie (click, chat, notices) wakes it up.
+    /// Something wants Pixie's attention. The pet engine decides whether that wakes it.
     func wake() {
-        lastPixieActivity = Date()
-        if dozing {
-            dozing = false
-            setEmotion(.surprised, intensity: 0.5, hold: 1.5)
-            playGesture(.jump)
-        }
+        onWake?()
     }
 
     private func updateTalking() {
         let v = ttsTalking || typingTalking
         if v != talking { talking = v }
+    }
+
+    // MARK: Pet body
+
+    func setPetPhase(_ p: PetPhase) {
+        guard p != petPhase else { return }
+        let now = Date()
+        fromFace = currentFace(at: now)
+        faceChangedAt = now
+        petPhase = p
+        phaseStart = now
+        dozing = p == .asleep || p == .napping
+    }
+
+    func setPetBehaviour(_ b: PetBehaviour) {
+        guard b != behaviour else { return }
+        behaviour = b
+        behaviourStart = Date()
+    }
+
+    func playCue(_ c: PetCue) {
+        cue = c
+        cueStart = Date()
+    }
+
+    /// The engine's resting emotion. Shown whenever no performance is holding the face.
+    func setBaseline(_ e: Emotion, intensity i: Double) {
+        baseEmotion = e
+        baseIntensity = max(0, min(1, i))
+        if Date() >= emotionHoldUntil && !talking && (emotion != e || abs(intensity - baseIntensity) > 0.05) {
+            setEmotion(e, intensity: baseIntensity)
+        }
+    }
+
+    /// A back-and-forth hover over the character (detected by the panel controller).
+    func hoverStroke() {
+        strokeUntil = Date().addingTimeInterval(1.6)
+        onPet?()
+    }
+
+    // MARK: Press gestures (see mac/README.md "Touching Pixie")
+
+    /// Mouse down on the character. Holding still for 0.5 s pets; moving drags (carry); a quick
+    /// release pokes and toggles the chat.
+    func pressBegan() {
+        pressTimer?.invalidate()
+        pressTicks = 0
+        pettingNow = false
+        carried = false
+        onDragBegan?()
+        pressTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pressTick() }
+        }
+    }
+
+    private func pressTick() {
+        pressTicks += 1
+        if pressTicks == 2 {
+            pettingNow = true
+            onPet?()
+        } else if pressTicks > 2 && pressTicks % 8 == 2 {
+            onPet?() // keep stroking every 2 s while held
+        }
+    }
+
+    func pressBecameDrag() {
+        pressTimer?.invalidate()
+        pressTimer = nil
+        pettingNow = false
+        carried = true
+        onCarry?()
+    }
+
+    func pressEnded(wasDrag: Bool) {
+        pressTimer?.invalidate()
+        pressTimer = nil
+        let held = pettingNow
+        pettingNow = false
+        carried = false
+        if wasDrag {
+            onDragEnded?()
+            return
+        }
+        onPressEnded?()
+        if !held {
+            onPoke?()
+            onTap?()
+        }
     }
 
     // MARK: Face
@@ -152,22 +261,15 @@ final class AvatarModel: ObservableObject {
             gesture = GestureKind.none
         }
 
-        if emotion != .neutral && now >= emotionHoldUntil && !talking {
-            setEmotion(.neutral, intensity: 0.5)
+        if let c = cue, now.timeIntervalSince(cueStart) > Pose.duration(of: c) {
+            cue = nil
+        }
+
+        if (emotion != baseEmotion || abs(intensity - baseIntensity) > 0.05) && now >= emotionHoldUntil && !talking {
+            setEmotion(baseEmotion, intensity: baseIntensity)
         }
         if gaze != .user && now >= gazeHoldUntil {
             gaze = .user
-        }
-
-        let systemIdle = AvatarModel.systemIdleSeconds()
-        let pixieIdle = now.timeIntervalSince(lastPixieActivity)
-        let shouldDoze = min(systemIdle, pixieIdle) >= Self.dozeAfter && !talking
-        if shouldDoze && !dozing {
-            fromFace = currentFace(at: now)
-            faceChangedAt = now
-            dozing = true
-        } else if !shouldDoze && dozing {
-            wake()
         }
     }
 
@@ -195,5 +297,10 @@ final class AvatarModel: ObservableObject {
             if s < best { best = s }
         }
         return best == .greatestFiniteMagnitude ? 0 : best
+    }
+
+    /// Seconds since the last key press anywhere (no permission needed; no key contents).
+    nonisolated static func secondsSinceKeyDown() -> Double {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown)
     }
 }

@@ -2,8 +2,8 @@ import AppKit
 import PixieCore
 import SwiftUI
 
-/// Wires senses, link, voice and the overlay together. Every decision is made by the brain; this class
-/// only senses, forwards, and performs what the brain sends back.
+/// Wires senses, link, voice, the pet body and the overlay together. The brain owns the relationship and
+/// the voice; the pet body (PixieCore `PetEngine`, PROTOCOL.md §4) owns state, animation and timing.
 @MainActor
 final class AppController: NSObject, NSWindowDelegate {
     let prefs: Preferences
@@ -15,6 +15,7 @@ final class AppController: NSObject, NSWindowDelegate {
     let activity: ActivityMonitor
     let screen: ScreenSense
     let audio: AudioSense
+    let pet: PetBodyController
 
     private var panel: PanelController?
     private var hotKey: HotKey?
@@ -35,7 +36,8 @@ final class AppController: NSObject, NSWindowDelegate {
     /// never conflicts with the nonisolated superclass initializer.
     init(prefs p: Preferences) {
         prefs = p
-        avatar = AvatarModel()
+        let av = AvatarModel()
+        avatar = av
         overlay = OverlayModel()
         link = LinkClient()
         voiceOut = VoiceOut()
@@ -43,6 +45,7 @@ final class AppController: NSObject, NSWindowDelegate {
         activity = ActivityMonitor()
         screen = ScreenSense(prefs: p)
         audio = AudioSense(prefs: p)
+        pet = PetBodyController(avatar: av)
         super.init()
     }
 
@@ -56,6 +59,7 @@ final class AppController: NSObject, NSWindowDelegate {
         wireVoice()
         wireLink()
         wireSenses()
+        wirePet()
 
         hotKey = HotKey { [weak self] in self?.hotKeyPressed() }
         hotKey?.start()
@@ -80,6 +84,7 @@ final class AppController: NSObject, NSWindowDelegate {
     }
 
     func shutdown() {
+        pet.stop()
         link.disconnect()
         audio.stop()
         voiceOut.stop()
@@ -100,6 +105,12 @@ final class AppController: NSObject, NSWindowDelegate {
 
     private func wireAvatarAndOverlay() {
         avatar.onTap = { [weak self] in self?.characterTapped() }
+        avatar.onWake = { [weak self] in self?.pet.interact(.alert) }
+        avatar.onPoke = { [weak self] in self?.pet.interact(.poke) }
+        avatar.onPet = { [weak self] in self?.pet.interact(.petting) }
+        avatar.onCarry = { [weak self] in self?.pet.interact(.carry) }
+        avatar.onFeed = { [weak self] in self?.pet.interact(.feed) }
+        overlay.onBubbleDismissed = { [weak self] in self?.pet.bubbleDismissedByUser() }
         overlay.onSend = { [weak self] text, via in self?.sendSay(text, via: via) }
         overlay.onFeedback = { [weak self] pid, verdict, edited, scope in
             guard let self else { return }
@@ -152,7 +163,10 @@ final class AppController: NSObject, NSWindowDelegate {
             } else {
                 self.connectionItem?.title = open ? "Connected to brain" : "Connecting…"
             }
-            if open { self.activity.resend() }
+            if open {
+                self.activity.resend()
+                self.pet.connected()
+            }
         }
         link.onUnauthorized = { [weak self] in
             guard let self else { return }
@@ -188,6 +202,18 @@ final class AppController: NSObject, NSWindowDelegate {
         }
     }
 
+    private func wirePet() {
+        pet.currentActivity = { [weak self] in self?.activity.currentActivity ?? .idle }
+        pet.isOnline = { [weak self] in self?.link.isOpen ?? false }
+        pet.send = { [weak self] env in self?.link.send(env) }
+        pet.showLine = { [weak self] line in
+            // Routine lines from the local pet.lines bank: a bubble only, never spoken.
+            self?.act(Performance(say: line.text, emotion: line.emotion, intensity: 0.6, gesture: line.gesture,
+                                  gaze: .user, voice: PixieVoiceSpec(), speak: false), proactive: true)
+        }
+        pet.start()
+    }
+
     // MARK: Incoming events
 
     private func handle(_ event: IncomingEvent) {
@@ -196,7 +222,16 @@ final class AppController: NSObject, NSWindowDelegate {
             userName = w.user_name ?? prefs.userName
             avatar.setEmotion(.happy, intensity: 0.5, hold: 2)
         case .perform(let p):
-            act(p)
+            if pet.performanceArrived(p) {
+                // Answer to our pet.speak: a proactive line, shown as a bubble only. `say: ""` = declined.
+                if !p.say.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    var bubble = p
+                    bubble.speak = false
+                    act(bubble, proactive: true)
+                }
+            } else {
+                act(p)
+            }
         case .notice(let n):
             if n.interrupt == false {
                 overlay.addToDigest(n)
@@ -229,16 +264,35 @@ final class AppController: NSObject, NSWindowDelegate {
             if e.code == "rate_limited" {
                 overlay.showToast("I'm thinking too fast — give me a moment.")
             }
+        case .petProfile(let p):
+            pet.profile(p)
+        case .envUpdate(let e):
+            pet.env(e)
+        case .petThoughts(let t):
+            pet.thoughts(t)
+        case .petLines(let l):
+            pet.lines(l)
+        case .petObey(let o):
+            // The user's instruction wins immediately: a proactive bubble on screen goes away too.
+            switch o.instruction {
+            case .quiet, .stop, .notNow, .sleep:
+                if overlay.bubbleProactive { overlay.dismissBubble() }
+            case .noGossip, .gossipOK, .lessNeedy, .moreChatty, .unknown:
+                break
+            }
+            pet.obey(o)
+        case .petAppraisal(let a):
+            pet.appraisal(a)
         case .unknown:
             break
         }
     }
 
-    private func act(_ p: Performance) {
+    private func act(_ p: Performance, proactive: Bool = false) {
         avatar.play(p)
-        let speakAloud = p.speak && prefs.voiceEnabled
+        let speakAloud = p.speak && prefs.voiceEnabled && !proactive
         if !p.say.isEmpty {
-            overlay.say(p.say, animateMouth: !speakAloud)
+            overlay.say(p.say, animateMouth: !speakAloud, proactive: proactive)
             if speakAloud { voiceOut.speak(p.say, voice: p.voice) }
         }
     }
@@ -293,7 +347,7 @@ final class AppController: NSObject, NSWindowDelegate {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         link.send("user.say", UserSayData(text: t, via: via))
-        avatar.wake()
+        pet.userChatted()
         avatar.setEmotion(.thinking, intensity: 0.6, hold: 6)
         voiceOut.stop()
         overlay.dismissBubble()
@@ -302,8 +356,8 @@ final class AppController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// A quick click (the poke has already been sent to the pet engine).
     private func characterTapped() {
-        avatar.wake()
         if overlay.chatOpen {
             overlay.closeChat()
         } else {
@@ -314,7 +368,7 @@ final class AppController: NSObject, NSWindowDelegate {
     }
 
     private func hotKeyPressed() {
-        avatar.wake()
+        pet.interact(.attention)
         if overlay.chatOpen {
             overlay.closeChat()
         } else {
@@ -407,6 +461,7 @@ final class AppController: NSObject, NSWindowDelegate {
         menu.addItem(.separator())
 
         menu.addItem(makeItem("Talk to Pixie", #selector(menuTalk)))
+        menu.addItem(makeItem("Give Pixie a snack", #selector(menuFeed)))
         let w = makeItem("Watch with me", #selector(menuWatch))
         menu.addItem(w)
         watchItem = w
@@ -434,7 +489,11 @@ final class AppController: NSObject, NSWindowDelegate {
     @objc private func menuTalk() {
         overlay.openChat()
         panel?.focusForTyping()
-        avatar.wake()
+        pet.interact(.attention)
+    }
+
+    @objc private func menuFeed() {
+        pet.interact(.feed)
     }
 
     @objc private func menuWatch() { setWatching(!watching) }

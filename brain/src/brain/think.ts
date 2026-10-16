@@ -7,6 +7,7 @@ import { AiError, parseJsonObject } from "../ai";
 import type { Performance } from "../protocol";
 import { EMOTIONS, GAZES, GESTURES, sanitizePerformance } from "../protocol";
 import { istString, truncate } from "../util";
+import { type Appraisal, parseAppraisal } from "./instruct";
 import type { Mood } from "./mood";
 import { describeMood } from "./mood";
 import type { Observation } from "./perceive";
@@ -46,7 +47,11 @@ export interface ThinkInput {
   now: number;
   /** extra guidance for this specific situation */
   guidance?: string;
+  /** also ask for an `appraisal` of the user's message (PROTOCOL §4.2 pet.appraisal), in the same call */
+  appraise?: boolean;
 }
+
+export const APPRAISAL_SCHEMA = `Also include "appraisal": {"event": "praise"|"scold"|"tease"|"affection"|"apology"|"thanks"|"goodbye", "intensity": number 0..1} for how the user's latest message feels to you, or null if it is none of these.`;
 
 export interface ModelAction {
   kind: string;
@@ -60,6 +65,8 @@ export interface Thought {
   /** true when the model failed and a canned reply was used */
   canned: boolean;
   model?: string;
+  /** the model's optional appraisal of the user's message (only when asked for) */
+  appraisal?: Appraisal | null;
 }
 
 export const RESPONSE_SCHEMA = `Return ONLY one JSON object, no prose:
@@ -82,6 +89,7 @@ export function buildMessages(i: ThinkInput): ChatMessage[] {
   if (i.memories.length) sys.push(`Things you remember (may or may not be relevant):\n- ${i.memories.slice(0, 5).map((m) => truncate(m, 200)).join("\n- ")}`);
   if (i.guidance) sys.push(`Situation guidance: ${i.guidance}`);
   sys.push("", RESPONSE_SCHEMA);
+  if (i.appraise) sys.push(APPRAISAL_SCHEMA);
 
   const msgs: ChatMessage[] = [{ role: "system", content: sys.join("\n") }];
   for (const t of i.recent.slice(-30)) {
@@ -137,6 +145,7 @@ export function toThought(j: Record<string, unknown>, replyTo?: string, model?: 
     action: sanitizeAction(j.action),
     canned: false,
     model,
+    appraisal: parseAppraisal(j.appraisal),
   };
 }
 

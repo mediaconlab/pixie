@@ -20,6 +20,11 @@ struct Pose {
     var decoration: Decoration = .none
     var dozing = false
     var time: Double = 0
+    /// 0 = facing the user, 1 = turned away (sulking).
+    var faceTurn: Double = 0
+    /// Puffed cheeks (sulk / pout), 0 … 1.
+    var cheekPuff: Double = 0
+    var props = PetProps()
 
     @MainActor
     static func compute(_ m: AvatarModel, now: Date) -> Pose {
@@ -31,11 +36,6 @@ struct Pose {
         p.decoration = EmotionStyle.decoration(for: m.displayedEmotion)
         if m.intensity < 0.25 && !m.dozing { p.decoration = .none }
 
-        // Breathing (slower when dozing).
-        let breathPeriod = m.dozing ? 5.0 : 3.6
-        let breath = sin(2 * .pi * t / breathPeriod)
-        p.scaleY = 1 + 0.025 * breath
-        p.scaleX = 1 - 0.012 * breath
         p.sproutSway = sin(t * 1.3) * 6 + (m.talking ? sin(t * 9) * 4 : 0)
 
         // Blink: closes over 0.07 s and reopens over 0.08 s.
@@ -57,14 +57,25 @@ struct Pose {
 
         // Talking mouth: flaps quickly, with a pop on each spoken word boundary.
         p.mouthOpen = p.face.mouthOpen
-        if m.talking {
+        if m.talking && !m.dozing {
             let flap = 0.18 + 0.32 * abs(sin(t * 13)) * (0.6 + 0.4 * abs(sin(t * 3.1)))
             let sinceWord = now.timeIntervalSince(m.lastWordAt)
             let pop = sinceWord < 0.18 ? (1 - sinceWord / 0.18) * 0.3 : 0
             p.mouthOpen = max(p.mouthOpen, min(1, flap + pop))
         }
 
-        // Gestures.
+        // Pet life: breathing variants, phase, behaviour, touch and cues (PetMotion.swift).
+        applyPet(m, now: now, to: &p)
+        if m.dozing {
+            p.lookX = 0
+            p.lookY = 0.3
+        } else if m.gaze != .user {
+            // A brain performance holding a gaze wins over the behaviour's own look direction.
+            p.lookX = look.0
+            p.lookY = look.1
+        }
+
+        // Brain gestures play on top.
         let duration = AvatarModel.duration(of: m.gesture)
         if m.gesture != GestureKind.none && duration > 0 {
             let e = now.timeIntervalSince(m.gestureStart)
@@ -75,7 +86,7 @@ struct Pose {
     }
 
     @MainActor
-    private static func lookVector(for gaze: Gaze, model m: AvatarModel) -> (Double, Double) {
+    static func lookVector(for gaze: Gaze, model m: AvatarModel) -> (Double, Double) {
         switch gaze {
         case .user: return (0, 0.05)
         case .screen: return (-0.25, 0.55)
@@ -152,24 +163,29 @@ struct CharacterView: View {
         self.size = size
     }
 
+    /// Modest frame rates: 24 fps awake, 12 fps while resting, paused while the panel is hidden.
+    private var frameInterval: Double { model.dozing ? 1.0 / 12.0 : 1.0 / 24.0 }
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: false)) { context in
+        TimelineView(.animation(minimumInterval: frameInterval, paused: model.hidden)) { context in
             CharacterFrame(pose: Pose.compute(model, now: context.date), size: size,
                            eyeIndicator: model.eyeIndicator, listening: model.listening, connected: model.connected)
         }
         .frame(width: size * 1.25, height: size * 1.3)
         .contentShape(Rectangle())
         .gesture(
+            // Press: hold still ≥ 0.5 s = petting, move > 3 pt = carry (drag), quick release = poke + chat.
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
                     if !dragActive {
                         dragActive = true
                         dragMoved = false
-                        model.onDragBegan?()
+                        model.pressBegan()
                     }
                     let d = value.translation
                     if !dragMoved && (abs(d.width) > 3 || abs(d.height) > 3) {
                         dragMoved = true
+                        model.pressBecameDrag()
                     }
                     if dragMoved { model.onDragChanged?() }
                 }
@@ -177,13 +193,12 @@ struct CharacterView: View {
                     let wasDrag = dragMoved
                     dragActive = false
                     dragMoved = false
-                    if wasDrag {
-                        model.onDragEnded?()
-                    } else {
-                        model.onTap?()
-                    }
+                    model.pressEnded(wasDrag: wasDrag)
                 }
         )
+        .contextMenu {
+            Button("Give Pixie a snack") { model.onFeed?() }
+        }
         .accessibilityElement()
         .accessibilityLabel("Pixie")
         .accessibilityAddTraits(.isButton)
@@ -209,11 +224,20 @@ struct CharacterFrame: View {
                 .blur(radius: 2)
                 .offset(y: s * 0.53)
 
+            if let style = pose.props.window {
+                PetWindowView(style: style, time: pose.time, size: s)
+                    .offset(x: -s * 0.36, y: -s * 0.08)
+            }
+
             ZStack {
                 SproutView(size: s, sway: pose.sproutSway, connected: connected)
                     .offset(y: -s * 0.40)
                 BodyView(size: s, color: pose.face.body)
                     .offset(y: s * 0.08)
+                if pose.cheekPuff > 0.01 {
+                    CheekPuffView(amount: pose.cheekPuff, size: s, color: pose.face.body)
+                        .offset(x: CGFloat(pose.faceTurn) * s * 0.18, y: s * 0.1)
+                }
                 if let arm = pose.armAngle {
                     Capsule()
                         .fill(pose.face.body.scaled(0.95).color)
@@ -221,8 +245,12 @@ struct CharacterFrame: View {
                         .rotationEffect(.degrees(arm), anchor: .bottom)
                         .offset(x: s * 0.43, y: s * 0.02)
                 }
+                // Turning away slides the face round to the side and lets it fade behind the body.
                 FaceView(pose: pose, size: s)
-                    .offset(x: CGFloat(pose.lookX) * s * 0.035, y: s * 0.1 + CGFloat(pose.lookY) * s * 0.02)
+                    .scaleEffect(x: CGFloat(1 - 0.45 * pose.faceTurn), y: 1)
+                    .offset(x: CGFloat(pose.lookX) * s * 0.035 + CGFloat(pose.faceTurn) * s * 0.3,
+                            y: s * 0.1 + CGFloat(pose.lookY) * s * 0.02)
+                    .opacity(1 - 0.75 * pose.faceTurn)
             }
             .scaleEffect(x: CGFloat(pose.scaleX), y: CGFloat(pose.scaleY), anchor: .bottom)
             .rotation3DEffect(.degrees(pose.spin), axis: (x: 0, y: 1, z: 0))
@@ -231,6 +259,9 @@ struct CharacterFrame: View {
 
             DecorationView(decoration: pose.decoration, time: pose.time, size: s)
                 .offset(x: CGFloat(pose.offsetX) * s, y: CGFloat(pose.offsetY) * s)
+
+            PetPropsView(props: pose.props, time: pose.time, size: s,
+                         bodyOffset: CGSize(width: CGFloat(pose.offsetX) * s, height: CGFloat(pose.offsetY) * s))
 
             BadgesView(size: s, eyeIndicator: eyeIndicator, listening: listening)
         }

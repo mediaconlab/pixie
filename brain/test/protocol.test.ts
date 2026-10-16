@@ -78,6 +78,35 @@ describe("parseEnvelope", () => {
   });
 });
 
+describe("pet life events (§4.1)", () => {
+  it("location.update re-rounds to 2 decimals and validates ranges", () => {
+    expect(parseEnvelope(env("location.update", { lat: 28.45678, lon: 77.03123, accuracy_m: 500, source: "phone" }))).toMatchObject({ ok: true, event: { data: { lat: 28.46, lon: 77.03, source: "phone" } } });
+    expect(parseEnvelope(env("location.update", { lat: 123, lon: 1 }))).toMatchObject({ ok: false });
+    expect(parseEnvelope(env("location.update", { lat: "28" }))).toMatchObject({ ok: false });
+  });
+  it("signals.update keeps provided fields only", () => {
+    const r = parseEnvelope(env("signals.update", { mic_in_use: true, music: null, typing_rate: "warp", junk: 1 }));
+    expect(r.ok && r.event.data).toEqual({ mic_in_use: true, music: null, typing_rate: "none" });
+  });
+  it("pet.state clamps and defaults", () => {
+    const r = parseEnvelope(env("pet.state", { phase: "hibernating", energy: 3, mood: { p: -4 }, emotion: "curious", ladder: 2.7 }));
+    expect(r).toMatchObject({ ok: true, event: { data: { phase: "awake", energy: 1, mood: { p: -1, a: 0, d: 0 }, emotion: "curious", ladder: 2 } } });
+  });
+  it("pet.event requires kind, tolerates unknown kinds", () => {
+    expect(parseEnvelope(env("pet.event", { kind: "petted", thought_id: "th_1" }))).toMatchObject({ ok: true, event: { data: { kind: "petted", thought_id: "th_1" } } });
+    expect(parseEnvelope(env("pet.event", { kind: "teleported" }))).toMatchObject({ ok: true });
+    expect(parseEnvelope(env("pet.event", {}))).toMatchObject({ ok: false });
+  });
+  it("pet.speak validates intent", () => {
+    expect(parseEnvelope(env("pet.speak", { intent: "gossip", thought_id: "th_x", hint: " hi " }))).toMatchObject({ ok: true, event: { data: { intent: "gossip", thought_id: "th_x", hint: "hi" } } });
+    expect(parseEnvelope(env("pet.speak", { intent: "sing" }))).toMatchObject({ ok: false });
+  });
+  it("phone.self_reply carries no text", () => {
+    const r = parseEnvelope(env("phone.self_reply", { key: "k", conversation: "Mom", is_group: false, text: "secret" }));
+    expect(r.ok && r.event.data).toEqual({ key: "k", conversation: "Mom", is_group: false });
+  });
+});
+
 describe("sanitizePerformance", () => {
   it("clamps and defaults everything", () => {
     const p = sanitizePerformance({ say: "hi", emotion: "furious", intensity: 7, gesture: "backflip", gaze: "ceiling", voice: { pace: "warp", pitch: 9.4 } });

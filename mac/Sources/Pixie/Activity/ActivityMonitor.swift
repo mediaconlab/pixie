@@ -11,6 +11,9 @@ final class ActivityMonitor {
     /// Supplies whether watch mode is on.
     var isWatching: () -> Bool = { false }
 
+    /// The latest classified activity (also while offline).
+    private(set) var currentActivity: Activity = .idle
+
     private var timer: Timer?
     private var last: StateUpdateData?
     private var appObserver: NSObjectProtocol?
@@ -52,6 +55,7 @@ final class ActivityMonitor {
         let watching = isWatching()
         let activity = ActivityClassifier.classify(bundleID: bundle, appName: name, windowTitle: title,
                                                    watching: watching, idleSeconds: idle)
+        currentActivity = activity
         let state = StateUpdateData(activity: activity, front_app: name, focus_mode: false, watching: watching)
         if state != last {
             last = state

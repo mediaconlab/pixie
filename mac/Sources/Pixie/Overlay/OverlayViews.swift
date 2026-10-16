@@ -63,7 +63,7 @@ struct OverlayRootView: View {
             if overlay.bubbleVisible {
                 SpeechBubble(text: overlay.bubbleText)
                     .interactiveRegion()
-                    .onTapGesture { overlay.dismissBubble() }
+                    .onTapGesture { overlay.userClosedBubble() }
                     .transition(.scale(scale: 0.85, anchor: .bottom).combined(with: .opacity))
             }
             if overlay.chatOpen {

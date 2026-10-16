@@ -117,8 +117,55 @@ export interface UserFeedbackData {
 }
 export interface ExecResultData { proposal_id: string; ok: boolean; error?: string }
 
+// ---- Pet life (PROTOCOL.md §4) -------------------------------------------------
+
+export const PET_PHASES = ["awake", "napping", "sleepy", "asleep", "waking"] as const;
+export type PetPhase = (typeof PET_PHASES)[number];
+export const PET_EVENT_KINDS = [
+  "petted", "poked", "fed", "carried", "bubble_replied", "bubble_dismissed", "bubble_ignored",
+  "woke", "fell_asleep", "ate", "sulked", "made_up", "reunion",
+] as const;
+export const SPEAK_INTENTS = [
+  "greet_morning", "playful_bid", "sulk_line", "rant", "gossip", "world", "callback",
+  "sleepy", "weather", "reunion", "late_night", "reaction",
+] as const;
+export type SpeakIntent = (typeof SPEAK_INTENTS)[number];
+
+export interface LocationUpdateData { lat: number; lon: number; accuracy_m: number; source: "phone" | "mac" }
+export interface SignalsUpdateData {
+  mic_in_use?: boolean;
+  camera_in_use?: boolean;
+  music?: { app: string; playing: boolean } | null;
+  calendar_busy_now?: boolean;
+  next_busy_in_min?: number | null;
+  typing_rate?: "none" | "low" | "high";
+  app_switch_rate?: "low" | "high";
+  screen_locked?: boolean;
+}
+export interface PetStateData {
+  phase: PetPhase;
+  sleep_pressure: number;
+  energy: number;
+  social: number;
+  boredom: number;
+  snack: number;
+  mood: { p: number; a: number; d: number };
+  emotion: string;
+  ladder: number;
+}
+/** `kind` is one of PET_EVENT_KINDS, or an unknown string from a newer app (logged, otherwise ignored). */
+export interface PetEventData { kind: string; intent?: string; thought_id?: string }
+export interface PetSpeakData { intent: SpeakIntent; thought_id?: string; hint?: string }
+export interface PhoneSelfReplyData { key: string; conversation: string | null; is_group: boolean }
+
 export type InboundEvent =
   | { type: "hello"; data: HelloData }
+  | { type: "location.update"; data: LocationUpdateData }
+  | { type: "signals.update"; data: SignalsUpdateData }
+  | { type: "pet.state"; data: PetStateData }
+  | { type: "pet.event"; data: PetEventData }
+  | { type: "pet.speak"; data: PetSpeakData }
+  | { type: "phone.self_reply"; data: PhoneSelfReplyData }
   | { type: "user.say"; data: UserSayData }
   | { type: "state.update"; data: StateUpdateData }
   | { type: "phone.call"; data: PhoneCallData }
@@ -335,6 +382,65 @@ export function parseEnvelope(raw: string | ArrayBuffer, now = Date.now()): Pars
       const data: ExecResultData = { proposal_id: pid, ok: bool(d.ok) };
       if (typeof d.error === "string") data.error = d.error.slice(0, 500);
       return { ok: true, event: { id, ts, type: "exec.result", data } };
+    }
+    case "location.update": {
+      const lat = typeof d.lat === "number" && Number.isFinite(d.lat) ? d.lat : NaN;
+      const lon = typeof d.lon === "number" && Number.isFinite(d.lon) ? d.lon : NaN;
+      if (!(Math.abs(lat) <= 90) || !(Math.abs(lon) <= 180)) return bad("location.update needs lat/lon");
+      // Re-round on arrival: the brain never keeps more than ~1 km precision.
+      const r2 = (x: number) => Math.round(x * 100) / 100;
+      return {
+        ok: true,
+        event: { id, ts, type: "location.update", data: { lat: r2(lat), lon: r2(lon), accuracy_m: Math.max(0, num(d.accuracy_m, 1000)), source: oneOf(d.source, ["phone", "mac"] as const, "mac") } },
+      };
+    }
+    case "signals.update": {
+      const data: SignalsUpdateData = {};
+      for (const k of ["mic_in_use", "camera_in_use", "calendar_busy_now", "screen_locked"] as const) if (typeof d[k] === "boolean") data[k] = d[k] as boolean;
+      if (d.music === null) data.music = null;
+      else if (isObj(d.music)) data.music = { app: str(d.music.app, 60), playing: bool(d.music.playing) };
+      if (d.next_busy_in_min === null) data.next_busy_in_min = null;
+      else if (typeof d.next_busy_in_min === "number" && Number.isFinite(d.next_busy_in_min)) data.next_busy_in_min = Math.max(0, Math.round(d.next_busy_in_min));
+      if (typeof d.typing_rate === "string") data.typing_rate = oneOf(d.typing_rate, ["none", "low", "high"] as const, "none");
+      if (typeof d.app_switch_rate === "string") data.app_switch_rate = oneOf(d.app_switch_rate, ["low", "high"] as const, "low");
+      return { ok: true, event: { id, ts, type: "signals.update", data } };
+    }
+    case "pet.state": {
+      const m = isObj(d.mood) ? d.mood : {};
+      const u = (x: unknown) => clamp(num(x, 0), 0, 1);
+      const s = (x: unknown) => clamp(num(x, 0), -1, 1);
+      return {
+        ok: true,
+        event: {
+          id, ts, type: "pet.state",
+          data: {
+            phase: oneOf(d.phase, PET_PHASES, "awake"),
+            sleep_pressure: u(d.sleep_pressure), energy: u(d.energy), social: u(d.social), boredom: u(d.boredom), snack: u(d.snack),
+            mood: { p: s(m.p), a: s(m.a), d: s(m.d) },
+            emotion: oneOf(d.emotion, EMOTIONS, "neutral"),
+            ladder: Math.max(0, Math.trunc(num(d.ladder, 0))),
+          },
+        },
+      };
+    }
+    case "pet.event": {
+      const kind = str(d.kind, 40);
+      if (!kind) return bad("pet.event.kind required");
+      const data: PetEventData = { kind };
+      if (typeof d.intent === "string" && d.intent) data.intent = d.intent.slice(0, 40);
+      if (typeof d.thought_id === "string" && d.thought_id) data.thought_id = d.thought_id.slice(0, 64);
+      return { ok: true, event: { id, ts, type: "pet.event", data } };
+    }
+    case "pet.speak": {
+      const intent = oneOf<SpeakIntent | "">(d.intent, SPEAK_INTENTS, "");
+      if (!intent) return bad("pet.speak.intent invalid");
+      const data: PetSpeakData = { intent };
+      if (typeof d.thought_id === "string" && d.thought_id) data.thought_id = d.thought_id.slice(0, 64);
+      if (typeof d.hint === "string" && d.hint.trim()) data.hint = d.hint.trim().slice(0, 200);
+      return { ok: true, event: { id, ts, type: "pet.speak", data } };
+    }
+    case "phone.self_reply": {
+      return { ok: true, event: { id, ts, type: "phone.self_reply", data: { key: str(d.key, 500), conversation: optStr(d.conversation, 100), is_group: bool(d.is_group) } } };
     }
     default:
       return bad(`unknown type ${truncate(j.type, 40)}`);

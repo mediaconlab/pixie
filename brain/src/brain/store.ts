@@ -198,7 +198,41 @@ export const MIGRATIONS: readonly Migration[] = [
        WHERE kv.key = 'blocked' AND json_valid(kv.value) AND j.value LIKE 'whatsapp.reply|%'`,
     ],
   },
-  // Append new migrations here: { version: 4, statements: ["ALTER TABLE ..."] },
+  /**
+   * Migration 4: pet life (PROTOCOL.md §4). Activity history (app names only) for rhythm and gossip
+   * aggregates, the pet's own log (phase changes, pet events, voiced lines) for caps and the weekly
+   * chattiness check, and the thought reservoir. No message text, no locations.
+   */
+  {
+    version: 4,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS activity_log (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         activity TEXT NOT NULL,
+         front_app TEXT,
+         ts INTEGER NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_activity_log_ts ON activity_log(ts)`,
+      /** kind: 'phase' | 'event' | 'speak'; name: phase / event kind / intent; ref: thought id or kind */
+      `CREATE TABLE IF NOT EXISTS pet_log (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         kind TEXT NOT NULL,
+         name TEXT NOT NULL,
+         ref TEXT,
+         ts INTEGER NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_pet_log_kind_ts ON pet_log(kind, name, ts)`,
+      `CREATE TABLE IF NOT EXISTS thoughts (
+         id TEXT PRIMARY KEY,
+         kind TEXT NOT NULL CHECK (kind IN ('gossip','world','callback')),
+         salience REAL NOT NULL,
+         expires_at INTEGER NOT NULL,
+         fact TEXT NOT NULL,
+         subject_key TEXT,
+         created_at INTEGER NOT NULL,
+         used_at INTEGER)`,
+      `CREATE INDEX IF NOT EXISTS idx_thoughts_kind ON thoughts(kind, expires_at)`,
+    ],
+  },
+  // Append new migrations here: { version: 5, statements: ["ALTER TABLE ..."] },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

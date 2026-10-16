@@ -62,6 +62,13 @@ final class PanelController {
     private var dragging = false
     private var dragStartMouse: NSPoint = .zero
     private var dragStartOrigin: NSPoint = .zero
+    // Hover-stroke detection (petting without clicking): direction reversals while over the character.
+    private var lastHoverX: CGFloat?
+    private var lastHoverDir: CGFloat = 0
+    private var hoverTravel: CGFloat = 0
+    private var reversals: [Date] = []
+    private var lastStrokeAt = Date.distantPast
+    private var visibilityTicks = 0
 
     static let panelSize = NSSize(width: 360, height: 640)
 
@@ -83,6 +90,7 @@ final class PanelController {
         avatar.onDragBegan = { [weak self] in self?.beginDrag() }
         avatar.onDragChanged = { [weak self] in self?.continueDrag() }
         avatar.onDragEnded = { [weak self] in self?.endDrag() }
+        avatar.onPressEnded = { [weak self] in self?.cancelPress() }
 
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
@@ -109,11 +117,19 @@ final class PanelController {
     // MARK: Click-through poller
 
     private func poll() {
+        visibilityTicks += 1
+        if visibilityTicks >= 30 {
+            visibilityTicks = 0
+            // Pause the character's animation timeline while the panel can't be seen.
+            let visible = panel.occlusionState.contains(.visible) && panel.isVisible
+            if avatar.hidden == visible { avatar.hidden = !visible }
+        }
         if dragging {
             if panel.ignoresMouseEvents { panel.ignoresMouseEvents = false }
             return
         }
         let mouse = NSEvent.mouseLocation
+        trackHoverStroke(mouse)
         let frame = panel.frame
         // Convert to the SwiftUI "overlay" space: origin at the top-left of the content.
         let local = CGPoint(x: mouse.x - frame.minX, y: frame.height - (mouse.y - frame.minY))
@@ -131,13 +147,57 @@ final class PanelController {
         }
     }
 
+    // MARK: Hover petting
+
+    /// Character rect in screen coordinates (bottom-centre of the panel).
+    private func characterScreenRect() -> NSRect {
+        let size = prefs.characterSize.points
+        let f = panel.frame
+        let w = size * 1.0
+        let h = size * 0.9
+        return NSRect(x: f.midX - w / 2, y: f.minY + 6 + size * 0.2, width: w, height: h)
+    }
+
+    /// Three left/right reversals of ≥ 12 pt within 1.5 s over the character count as a stroke.
+    private func trackHoverStroke(_ mouse: NSPoint) {
+        guard characterScreenRect().contains(mouse), NSEvent.pressedMouseButtons == 0 else {
+            lastHoverX = nil
+            hoverTravel = 0
+            return
+        }
+        defer { lastHoverX = mouse.x }
+        guard let last = lastHoverX else { return }
+        let dx = mouse.x - last
+        guard abs(dx) >= 1 else { return }
+        let dir: CGFloat = dx > 0 ? 1 : -1
+        if dir == lastHoverDir {
+            hoverTravel += abs(dx)
+            return
+        }
+        let now = Date()
+        if hoverTravel >= 12 {
+            reversals = reversals.filter { now.timeIntervalSince($0) < 1.5 } + [now]
+        }
+        lastHoverDir = dir
+        hoverTravel = abs(dx)
+        if reversals.count >= 3 && now.timeIntervalSince(lastStrokeAt) > 1.2 {
+            lastStrokeAt = now
+            reversals.removeAll()
+            avatar.hoverStroke()
+        }
+    }
+
     // MARK: Dragging
 
     private func beginDrag() {
         dragging = true
         dragStartMouse = NSEvent.mouseLocation
         dragStartOrigin = panel.frame.origin
-        avatar.wake()
+    }
+
+    /// A press ended without moving: stop capturing like a finished drag, without moving the panel.
+    private func cancelPress() {
+        dragging = false
     }
 
     private func continueDrag() {

@@ -20,6 +20,8 @@ final class OverlayModel: ObservableObject {
     // Speech bubble (typewriter)
     @Published private(set) var bubbleText = ""
     @Published private(set) var bubbleVisible = false
+    /// True while the visible bubble is a line Pixie started on its own (outcome tracking).
+    private(set) var bubbleProactive = false
 
     // Cards
     @Published private(set) var notices: [NoticeItem] = []
@@ -44,6 +46,8 @@ final class OverlayModel: ObservableObject {
     var onMicUp: (() -> Void)?
     /// Called with true while the typewriter runs and nobody is speaking aloud (drives the mouth).
     var onTyping: ((Bool) -> Void)?
+    /// The user closed a proactive bubble (tap). Expiry is tracked by the pet engine as "ignored".
+    var onBubbleDismissed: (() -> Void)?
 
     private var fullText: [Character] = []
     private var typeIndex = 0
@@ -56,9 +60,10 @@ final class OverlayModel: ObservableObject {
     // MARK: Bubble
 
     /// Shows `text` with a typewriter effect. `animateMouth` is false when TTS already animates it.
-    func say(_ text: String, animateMouth: Bool) {
+    func say(_ text: String, animateMouth: Bool, proactive: Bool = false) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        bubbleProactive = proactive
         typeTimer?.invalidate()
         hideWork?.cancel()
         fullText = Array(trimmed)
@@ -113,6 +118,7 @@ final class OverlayModel: ObservableObject {
         let delay = max(4.0, min(14.0, 3.0 + Double(chars) * 0.055))
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
+                self?.bubbleProactive = false
                 withAnimation(.easeOut(duration: 0.25)) { self?.bubbleVisible = false }
             }
         }
@@ -124,7 +130,15 @@ final class OverlayModel: ObservableObject {
         typeTimer?.invalidate()
         hideWork?.cancel()
         onTyping?(false)
+        bubbleProactive = false
         withAnimation(.easeOut(duration: 0.2)) { bubbleVisible = false }
+    }
+
+    /// The user tapped the bubble to close it.
+    func userClosedBubble() {
+        let proactive = bubbleProactive
+        dismissBubble()
+        if proactive { onBubbleDismissed?() }
     }
 
     // MARK: Notices & digest

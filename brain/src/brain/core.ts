@@ -37,6 +37,8 @@ import {
   buildMessages, draftReply, think, thinkCoding,
 } from "./think";
 import { evictionOrder, findDuplicate, nearDuplicatePairs, parseVec, topK, vecToJson } from "./vectors";
+import { PetLife } from "./petcore";
+import type { FetchLike } from "./surroundings";
 import { parseJsonObject } from "../ai";
 
 // ---- constants -----------------------------------------------------------------------------
@@ -75,8 +77,10 @@ export interface Runtime {
   log?: (rec: Record<string, unknown>) => void;
   /** Guardrail level chosen by the owner (env AUTONOMY). Defaults to "guarded". */
   autonomy?: Autonomy;
-  /** Random source for reply-card exploration (tests pin it). Defaults to Math.random. */
+  /** Random source for reply-card exploration and pet traits (tests pin it). Defaults to Math.random. */
   random?: () => number;
+  /** HTTP fetch for weather (tests mock it). Defaults to the global fetch. */
+  fetch?: FetchLike;
 }
 
 interface UserState {
@@ -160,12 +164,41 @@ export class BrainCore {
   private readonly now: () => number;
   private chain: Promise<unknown> = Promise.resolve();
   private memCache: MemRow[] | null = null;
+  /** Relationship, surroundings, thoughts and voice for the pet (PROTOCOL.md §4). */
+  readonly pet: PetLife;
 
   constructor(private readonly rt: Runtime) {
     this.sql = rt.sql;
     this.now = rt.now ?? Date.now;
     initSchema(this.sql);
     this.kv = new KV(this.sql);
+    const random = rt.random ?? Math.random;
+    this.pet = new PetLife({
+      sql: this.sql,
+      kv: this.kv,
+      ai: rt.ai,
+      fetch: rt.fetch ?? ((url, init) => fetch(url, init)),
+      now: () => this.now(),
+      random,
+      macs: () => this.online("mac"),
+      send: (conns, type, data) => void this.sendTo(conns, type, data),
+      perform: (p, to) => {
+        this.sendTo(to, "bot.perform", p);
+        if (p.say) this.addTurn("pixie", p.say);
+      },
+      user: () => {
+        const st = this.state;
+        return { activity: st.activity, inCall: st.inCall, front_app: st.front_app };
+      },
+      userName: () => this.userName,
+      personaName: () => this.persona.name,
+      backgroundBudgetLeft: () => BACKGROUND_MODEL_BUDGET - this.modelCallsLastHour(),
+      userBudgetOk: () => this.modelCallsLastHour() < MAX_MODEL_CALLS_PER_HOUR,
+      noteModelCall: () => this.noteModelCall(),
+      relevantMemories: (text, k) => this.relevantMemories(text, k),
+      memories: () => this.memories().map((m) => ({ id: m.id, kind: m.kind, text: m.text, value: m.value, ts: m.ts })),
+      remember: (texts, kind, value) => this.remember(texts, kind, value),
+    });
   }
 
   // ---- serialization -------------------------------------------------------------------------
@@ -248,6 +281,11 @@ export class BrainCore {
     if (p.say) this.addTurn("pixie", p.say);
   }
 
+  /** Every mac plus the originating device (for replies). */
+  private originConns(o: Origin): DeviceConn[] {
+    return [...this.online("mac"), ...this.online().filter((d) => d.id === o.deviceId && d.kind !== "mac")];
+  }
+
   private error(conn: Origin | undefined, code: "rate_limited" | "bad_event" | "model_error", message: string): void {
     if (conn) this.sendToDevice(conn.deviceId, "error", { code, message });
   }
@@ -310,6 +348,18 @@ export class BrainCore {
         return this.onFeedback(ev.data, o);
       case "exec.result":
         return this.onExecResult(ev.data);
+      case "location.update":
+        return this.pet.onLocation(ev.data);
+      case "signals.update":
+        return this.pet.onSignals(ev.data);
+      case "pet.state":
+        return this.pet.onPetState(ev.data);
+      case "pet.event":
+        return this.pet.onPetEvent(ev.data);
+      case "pet.speak":
+        return this.pet.onSpeak(ev.data, o.eventId, this.originConns(o));
+      case "phone.self_reply":
+        return this.onSelfReply(ev.data.conversation);
     }
   }
 
@@ -452,6 +502,7 @@ export class BrainCore {
     }
     for (const k of ["mood", "promoted", "blocked", "promotion_asked", "pending_promotion", "transcript", "last_caption", "pending_ask", "digest_rules", "ide_state", "reply_explore", "pending_reply_rule"]) this.kv.delete(k);
     this.memCache = null;
+    this.pet.forget();
   }
 
   private preferences(): string[] {
@@ -604,8 +655,16 @@ export class BrainCore {
       // Catch up on anything that waited for the Mac.
       this.deliverDueReminders();
       await this.flushDigest(false);
+      // Pet layer: profile, surroundings, line bank and thoughts (PROTOCOL.md §4.2).
+      await this.pet.onMacHello(this.online().filter((c) => c.id === o.deviceId));
     }
     void d;
+  }
+
+  /** The user's own message appeared in a chat (no text): counts as an interaction with that conversation. */
+  private onSelfReply(conversation: string | null): void {
+    if (!conversation?.trim()) return;
+    this.sql.exec("INSERT INTO interactions (who_key, type, ts) VALUES (?, 'self_reply', ?)", nameKey(conversation), this.now());
   }
 
   private async onUserSay(d: UserSayData, o: Origin): Promise<void> {
@@ -614,6 +673,11 @@ export class BrainCore {
     const me = moodEventFromText(text);
     if (me) this.moodEvent(me);
     else this.moodEvent("chat");
+    this.pet.noteUserContact();
+    // pet.appraisal: heuristics first; ambiguous messages get it from the chat call's JSON (no extra call).
+    const heurAppraisal = this.pet.heuristicAppraisal(text);
+    this.pet.applyAppraisal(heurAppraisal);
+    this.pet.noticeWorld(text, "chat");
 
     // Pending "promote to auto?" question
     const pending = this.kv.get<{ pattern: string; kind: string; ts: number } | null>("pending_promotion", null);
@@ -630,6 +694,9 @@ export class BrainCore {
         return;
       }
     }
+
+    // Pet instructions ("be quiet", "chup raho", "don't gossip about Rahul", ...) before normal chat.
+    if (await this.pet.handleInstruction(text, d.via, o.eventId, this.originConns(o))) return;
 
     // Reply-card rules ("always show me reply options for Mom", "Priya is from work", ...)
     if (await this.handleReplyCommand(text, o)) return;
@@ -649,11 +716,11 @@ export class BrainCore {
     }
 
     if (!this.budget("user", o)) return;
-    await this.respond({ kind: "chat", text }, o);
+    await this.respond({ kind: "chat", text }, o, undefined, false, !heurAppraisal);
   }
 
   /** Generic think → perform → remember → act. */
-  private async respond(obs: Observation, o: Origin | undefined, guidance?: string, quietOk = false): Promise<Performance | null> {
+  private async respond(obs: Observation, o: Origin | undefined, guidance?: string, quietOk = false, appraise = false): Promise<Performance | null> {
     const st = this.state;
     const memories = await this.relevantMemories(obs.text);
     let recent = this.recentTurns();
@@ -672,8 +739,10 @@ export class BrainCore {
       observation: obs,
       now: this.now(),
       guidance,
+      appraise,
     });
     const th = await think(this.rt.ai, msgs, { replyTo: o?.eventId, onModelCall: this.noteModelCall });
+    if (appraise && th.appraisal) this.pet.applyAppraisal(th.appraisal);
     let p = th.performance;
     if (th.action) {
       const handled = await this.handleModelAction(th.action, o, p);
@@ -791,6 +860,8 @@ export class BrainCore {
       ...(d.watching !== undefined ? { watching: d.watching } : {}),
     });
     if (next.activity !== "away" && !isFocused(next.activity, next.focus_mode)) this.markCardsActive();
+    if (next.activity !== prev.activity || next.front_app !== prev.front_app) this.pet.onActivity(next.activity, next.front_app);
+    if (next.activity !== "away" && prev.activity === "away") this.pet.noteUserContact();
     const becameIdle = prev.activity !== "idle" && next.activity === "idle";
     if (becameIdle || (prev.focus_mode && !next.focus_mode && next.activity === "idle")) await this.flushDigest(true);
     if (!prev.watching && next.watching) {
@@ -941,6 +1012,8 @@ export class BrainCore {
       }
     }
     this.kv.set("vision", vs);
+    if (d.window) this.pet.noticeWorld(d.window, "window", d.front_app);
+    if (d.ocr) this.pet.noticeWorld(d.ocr, "ocr", d.front_app);
     if (caption || d.ocr) {
       this.kv.set("last_caption", { caption: caption ?? this.kv.get<{ caption: string } | null>("last_caption", null)?.caption ?? "", ocr: truncate(d.ocr ?? "", 1500), front_app: d.front_app ?? null, ts: this.now(), fresh: !!caption });
     }
@@ -968,6 +1041,7 @@ export class BrainCore {
 
   private async onTranscript(d: AudioTranscriptData, ts: number): Promise<void> {
     if (!this.state.watching || !d.text.trim()) return;
+    this.pet.noticeWorld(d.text, "transcript");
     const buf = this.kv.get<TranscriptChunk[]>("transcript", []);
     this.kv.set("transcript", appendTranscript(buf, { text: d.text, ts: Math.min(ts, this.now()) }));
   }
@@ -1477,6 +1551,7 @@ export class BrainCore {
       this.deliverDueReminders();
       await this.flushDigest(false);
       await this.watchTick();
+      if (this.online("mac").length && this.pet.tickDue()) await this.pet.tick(true);
       this.log({ evt: "alarm", ms: this.now() - now });
       await this.scheduleNextAlarm();
     });
@@ -1530,6 +1605,9 @@ export class BrainCore {
         const w = this.kv.get<{ lastTick: number }>("watch", { lastTick: now });
         cands.push(Math.max(now + 5_000, w.lastTick + WATCH_INTERVAL_MS));
       }
+      // Hourly env.update / pet upkeep (only once there is a location to fetch weather for).
+      const petAt = this.pet.nextTickAt();
+      if (petAt != null) cands.push(petAt);
     }
     const next = cands.length ? Math.max(now + 1000, Math.min(...cands)) : null;
     await this.rt.setAlarm(next);
@@ -1537,7 +1615,7 @@ export class BrainCore {
 
   // ---- nightly learner ---------------------------------------------------------------------------------------------
 
-  async learn(): Promise<{ episodes: number; merged: number; preferences: number; contacts: number }> {
+  async learn(): Promise<{ episodes: number; merged: number; preferences: number; contacts: number; pet?: { rhythm: boolean; lines: number; diary: boolean } }> {
     return this.serialize(async () => {
       const t0 = this.now();
       const since = this.kv.get<number>("last_learn_ts", t0 - 86_400_000);
@@ -1555,6 +1633,7 @@ export class BrainCore {
 
       // 1) episodes + model-derived preferences
       let episodes = 0;
+      let episodeTexts: string[] = [];
       let modelPrefs: string[] = [];
       if (turns.filter((t) => t.role !== "event").length >= 2 && this.budget("background")) {
         try {
@@ -1562,6 +1641,7 @@ export class BrainCore {
           const res = await this.rt.ai.chat(buildLearnerMessages(this.userName, turns, feedback), { maxTokens: 400, temperature: 0.3 });
           const out = parseLearnerOutput(parseJsonObject(res.text));
           episodes = await this.remember(out.episodes, "episode", 0.5);
+          episodeTexts = out.episodes;
           modelPrefs = out.preferences;
         } catch {
           /* try again tomorrow */
@@ -1613,13 +1693,21 @@ export class BrainCore {
       // 5) reply cards: expired cards count as ignored, temporary rules expire, stats rebuilt from events
       this.learnReplies(t0);
 
+      // 6) pet: rhythm, familiarity, trait drift, bond fade, weekly chattiness, line bank, reflection + diary
+      let pet: { rhythm: boolean; lines: number; diary: boolean } | undefined;
+      try {
+        pet = await this.pet.learn(episodeTexts);
+      } catch {
+        pet = undefined;
+      }
+
       // housekeeping
       this.sql.exec("DELETE FROM interactions WHERE ts < ?", t0 - 30 * 86_400_000);
       this.sql.exec("DELETE FROM model_calls WHERE ts < ?", t0 - 3600_000);
       this.sql.exec("DELETE FROM decisions WHERE ts < ?", t0 - 180 * 86_400_000);
       this.kv.set("last_learn_ts", t0);
       this.log({ evt: "learn", ms: this.now() - t0 });
-      return { episodes, merged: pairs.length, preferences: prefCount, contacts: contactUpdates };
+      return { episodes, merged: pairs.length, preferences: prefCount, contacts: contactUpdates, ...(pet ? { pet } : {}) };
     });
   }
 }
