@@ -112,6 +112,8 @@ export interface UserFeedbackData {
   proposal_id: string;
   verdict: "approve" | "reject" | "never";
   edited_text?: string;
+  /** PROTOCOL §5: which rule a "never" creates (also sent by the card's quick actions). */
+  scope?: "contact" | "group" | "like_this";
 }
 export interface ExecResultData { proposal_id: string; ok: boolean; error?: string }
 
@@ -142,6 +144,12 @@ export interface ProposeData {
   payload: Record<string, unknown>;
   executor: Executor;
   expires_at: number;
+  /** PROTOCOL §5 (whatsapp.reply cards only): one short reason the card is shown. */
+  why?: string;
+  /** PROTOCOL §5: true when the card is a labelled exploration (max 3/day). */
+  exploration?: boolean;
+  /** PROTOCOL §5: one-tap "never" shortcuts; the device sends verdict "never" + the matching scope. */
+  quick_actions?: Array<{ id: string; label: string }>;
 }
 
 export type ErrorCode = "rate_limited" | "bad_event" | "model_error";
@@ -317,6 +325,8 @@ export function parseEnvelope(raw: string | ArrayBuffer, now = Date.now()): Pars
       if (!pid || !verdict) return bad("user.feedback requires proposal_id and verdict");
       const data: UserFeedbackData = { proposal_id: pid, verdict };
       if (typeof d.edited_text === "string" && d.edited_text.trim()) data.edited_text = d.edited_text.slice(0, 2000);
+      const scope = oneOf<NonNullable<UserFeedbackData["scope"]> | "">(d.scope, ["contact", "group", "like_this"], "");
+      if (scope) data.scope = scope;
       return { ok: true, event: { id, ts, type: "user.feedback", data } };
     }
     case "exec.result": {

@@ -114,6 +114,16 @@ export class UserBrain extends DurableObject<Env> {
       await this.core.serialize(async () => this.core.forget());
       return json({ ok: true });
     }
+    if (url.pathname === "/reply-rules" && req.method === "GET") return json(this.core.replyRulesDump());
+    if (url.pathname === "/reply-rules/reset-learning" && req.method === "POST") {
+      await this.core.serialize(async () => this.core.resetReplyLearning());
+      return json({ ok: true });
+    }
+    const rr = url.pathname.match(/^\/reply-rules\/([A-Za-z0-9_-]{1,64})$/);
+    if (rr && req.method === "DELETE") {
+      const ok = await this.core.serialize(async () => this.core.deleteReplyRule(rr[1]!));
+      return ok ? json({ ok: true }) : json({ error: "not_found" }, 404);
+    }
     if (url.pathname === "/online") return json({ online: [...new Set(this.connections().map((c) => c.id))] });
     if (url.pathname === "/learn" && req.method === "POST") return json(await this.core.learn());
     if (url.pathname === "/revoke" && req.method === "POST") {

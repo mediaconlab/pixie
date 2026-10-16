@@ -112,7 +112,93 @@ const V1_SCHEMA: readonly string[] = [
 
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, statements: [...V1_SCHEMA] },
-  // Append new migrations here: { version: 2, statements: ["ALTER TABLE ..."] },
+  /** Migration 2: smart reply cards (PROTOCOL.md §5). Keys and counts only, never message text. */
+  {
+    version: 2,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS reply_rules (
+         id TEXT PRIMARY KEY,
+         effect TEXT NOT NULL CHECK (effect IN ('always','never','only')),
+         subject_type TEXT NOT NULL CHECK (subject_type IN ('contact','group','relation','all_groups','all_dms','all')),
+         subject_key TEXT,
+         subject_label TEXT NOT NULL,
+         scope_key TEXT NOT NULL,
+         conditions TEXT,
+         expires_at INTEGER,
+         source TEXT NOT NULL,
+         utterance TEXT,
+         created_at INTEGER NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_reply_rules_scope ON reply_rules(scope_key)`,
+      /** one row per card outcome; subject_key is c:<contact key> (DM) or g:<group key> (group) */
+      `CREATE TABLE IF NOT EXISTS reply_events (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         subject_key TEXT NOT NULL,
+         relation_key TEXT NOT NULL,
+         is_group INTEGER NOT NULL,
+         outcome TEXT NOT NULL,
+         active INTEGER NOT NULL DEFAULT 1,
+         category TEXT,
+         ts INTEGER NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_reply_events_subject ON reply_events(subject_key, ts)`,
+      `CREATE INDEX IF NOT EXISTS idx_reply_events_ts ON reply_events(ts)`,
+      /** decayed evidence per key (subject, r:<relation>, *:dm / *:group), as of updated_at */
+      `CREATE TABLE IF NOT EXISTS reply_stats (
+         key TEXT PRIMARY KEY,
+         pos REAL NOT NULL DEFAULT 0,
+         neg REAL NOT NULL DEFAULT 0,
+         updated_at INTEGER NOT NULL)`,
+      /** reply cards Pixie showed for incoming messages, to learn from what happens to them */
+      `CREATE TABLE IF NOT EXISTS reply_cards (
+         proposal_id TEXT PRIMARY KEY,
+         subject_key TEXT NOT NULL,
+         relation_key TEXT NOT NULL,
+         is_group INTEGER NOT NULL,
+         contact_key TEXT NOT NULL,
+         contact_name TEXT NOT NULL,
+         group_key TEXT,
+         group_name TEXT,
+         category TEXT,
+         exploration INTEGER NOT NULL DEFAULT 0,
+         active INTEGER NOT NULL DEFAULT 0,
+         status TEXT NOT NULL DEFAULT 'pending',
+         created_at INTEGER NOT NULL,
+         expires_at INTEGER NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_reply_cards_status ON reply_cards(status, expires_at)`,
+      /** chat / group names seen in notifications, for resolving names in rules */
+      `CREATE TABLE IF NOT EXISTS conversations (
+         name_key TEXT NOT NULL,
+         name TEXT NOT NULL,
+         is_group INTEGER NOT NULL,
+         messages INTEGER NOT NULL DEFAULT 0,
+         last_ts INTEGER NOT NULL,
+         PRIMARY KEY (name_key, is_group))`,
+    ],
+  },
+  /**
+   * Migration 3: copy legacy kv "blocked" whatsapp.reply patterns (from "never" on a draft card) into
+   * reply_rules as DM "never" rules. Idempotent: deterministic ids + INSERT OR IGNORE. The kv entries
+   * stay, because they also gate replies the user asks Pixie to send (decideTier); deleting the rule
+   * via DELETE /v1/reply-rules/:id removes the matching kv entry too.
+   */
+  {
+    version: 3,
+    statements: [
+      `INSERT OR IGNORE INTO reply_rules (id, effect, subject_type, subject_key, subject_label, scope_key, conditions, expires_at, source, utterance, created_at)
+       SELECT
+         'rr_mig_' || hex(substr(j.value, 16)),
+         'never',
+         CASE WHEN substr(j.value, 16) IN ('', '*') THEN 'all' ELSE 'contact' END,
+         CASE WHEN substr(j.value, 16) IN ('', '*') THEN NULL ELSE substr(j.value, 16) END,
+         CASE WHEN substr(j.value, 16) IN ('', '*') THEN 'everyone'
+              ELSE COALESCE((SELECT c.name FROM contacts c WHERE c.name_key = substr(j.value, 16)), substr(j.value, 16)) END,
+         CASE WHEN substr(j.value, 16) IN ('', '*') THEN 'all:' ELSE 'contact:' || substr(j.value, 16) || ':dm' END,
+         NULL, NULL, 'migrated', NULL,
+         CAST(strftime('%s', 'now') AS INTEGER) * 1000
+       FROM kv, json_each(kv.value) AS j
+       WHERE kv.key = 'blocked' AND json_valid(kv.value) AND j.value LIKE 'whatsapp.reply|%'`,
+    ],
+  },
+  // Append new migrations here: { version: 4, statements: ["ALTER TABLE ..."] },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

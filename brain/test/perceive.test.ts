@@ -80,7 +80,17 @@ describe("classifyMessage", () => {
     const ai = new FakeAi();
     ai.queue.push(JSON.stringify({ urgency: 0.7, summary: "Mom wants a call back", expects_reply: true }));
     const c = await classifyMessage(ai, msg, "family");
-    expect(c).toEqual({ urgency: 0.7, summary: "Mom wants a call back", expects_reply: true });
+    // p_reply / category added by smart reply cards: no model p_reply → heuristic nudged up by expects_reply.
+    expect(c).toEqual({ urgency: 0.7, summary: "Mom wants a call back", expects_reply: true, p_reply: 0.75, category: "question" });
+  });
+  it("returns the model's p_reply and category when given; heuristic on failure", async () => {
+    const ai = new FakeAi();
+    ai.queue.push(JSON.stringify({ urgency: 0.2, summary: "s", expects_reply: false, p_reply: 0.9, category: "question" }));
+    expect(await classifyMessage(ai, msg, null)).toMatchObject({ p_reply: 0.9, category: "question" });
+    ai.queue.push(JSON.stringify({ urgency: 0.2, summary: "s", p_reply: 3, category: "bogus" }));
+    expect(await classifyMessage(ai, msg, null)).toMatchObject({ p_reply: 1, category: "question" });
+    ai.queue.push(new Error("down"));
+    expect(await classifyMessage(ai, { ...msg, preview: "ok" }, null)).toMatchObject({ p_reply: 0.05, category: "ack" });
   });
   it("clamps and falls back", async () => {
     const ai = new FakeAi();

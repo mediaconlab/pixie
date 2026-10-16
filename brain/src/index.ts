@@ -119,7 +119,7 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext): Pro
   // ---- authenticated routes ----
   const isWs = path === "/v1/ws";
   const dev = await authenticate(req, env.DB, { allowQuery: isWs, now, waitUntil: (p) => ctx.waitUntil(p) });
-  const needsAuth = ["/v1/pair/start", "/v1/devices", "/v1/memory", "/v1/ws"].includes(path) || path.startsWith("/v1/devices/");
+  const needsAuth = ["/v1/pair/start", "/v1/devices", "/v1/memory", "/v1/ws", "/v1/reply-rules"].includes(path) || path.startsWith("/v1/devices/") || path.startsWith("/v1/reply-rules/");
   if (needsAuth && !dev) return err(401, "unauthorized");
 
   if (dev) {
@@ -158,6 +158,12 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext): Pro
     if (path === "/v1/memory" && (method === "GET" || method === "DELETE")) {
       return withCors(await toBrain(env, dev, "/memory", { method }));
     }
+
+    // Smart reply cards (PROTOCOL.md §5), served by the user's DO like /v1/memory.
+    if (path === "/v1/reply-rules" && method === "GET") return withCors(await toBrain(env, dev, "/reply-rules", { method }));
+    if (path === "/v1/reply-rules/reset-learning" && method === "POST") return withCors(await toBrain(env, dev, "/reply-rules/reset-learning", { method }));
+    const rr = path.match(/^\/v1\/reply-rules\/([A-Za-z0-9_-]{1,64})$/);
+    if (rr && method === "DELETE") return withCors(await toBrain(env, dev, `/reply-rules/${rr[1]!}`, { method }));
   }
 
   return err(404, "not_found");

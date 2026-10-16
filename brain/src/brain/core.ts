@@ -15,17 +15,23 @@ import { MIN_PROTOCOL, PROTOCOL_VERSION, envelope, perf, sanitizePerformance } f
 import { clamp, newId, truncate } from "../util";
 import {
   type Autonomy, type DecisionRow, type Verdict, DIGEST_INTERVAL_MS, PROPOSAL_TTL_MS, decideTier, digestDue, isFocused, parseYesNo, patternKey,
-  routeNotification, shouldDraftReply, shouldOfferPromotion,
+  routeNotification, shouldOfferPromotion,
 } from "./decide";
 import { buildLearnerMessages, heuristicPreferences, parseLearnerOutput, updatedImportance, type FeedbackRow } from "./learner";
 import { type Mood, type MoodEvent, decay, initialMood, moodEventFromText, moodForWire, nudge } from "./mood";
 import {
   type Contact, type Observation, type TranscriptChunk, VISION_PROMPT, appendTranscript, blendUrgency, callObservation,
-  classifyMessage, codeWindow, frameFingerprint, guessImportance, guessRelation, hasEmergencyKeyword, heuristicUrgency,
+  classifyMessage, codeWindow, fallbackClassification, frameFingerprint, guessImportance, guessRelation, hasEmergencyKeyword, heuristicUrgency,
   ideObservation, messageObservation, needsCodingHelp, ocrHasErrors, phoneHash, screenObservation, shouldCaption,
   watchObservation,
 } from "./perceive";
 import { KV, type SqlLike, initSchema, nameKey } from "./store";
+import {
+  type Counts, type FeedbackScope, type MessageContext, type NameCandidate, type NewRule, type Outcome, type ParsedCommand, type ReplyRule,
+  type RuleConditions, type RuleSource, type SubjectType, EVENT_RETENTION_MS, ZERO, buildRuleParseMessages, canOfferReply, confirmLine,
+  decayed, decideReplyCard, globalKey, istDayKey, looksLikeReplyCommand, mentionsUser, neverRuleFor, outcomeEvidence, parseModelCommand,
+  parseReplyCommand, pickOption, quickActions, recomputeStats, relationBucket, relationKey, resolveName, ruleActive, ruleScopeKey, subjectKey,
+} from "./replies";
 import {
   type ContextTurn, type ModelAction, type Persona, DEFAULT_PERSONA, buildCodingMessages, buildDraftMessages,
   buildMessages, draftReply, think, thinkCoding,
@@ -69,6 +75,8 @@ export interface Runtime {
   log?: (rec: Record<string, unknown>) => void;
   /** Guardrail level chosen by the owner (env AUTONOMY). Defaults to "guarded". */
   autonomy?: Autonomy;
+  /** Random source for reply-card exploration (tests pin it). Defaults to Math.random. */
+  random?: () => number;
 }
 
 interface UserState {
@@ -109,6 +117,42 @@ interface ProposalRow {
 type ContactRowT = { name: string; phone_hash: string | null; relation: string | null; importance: number };
 
 type Origin = { deviceId: string; kind: DeviceKind; eventId: string };
+
+interface ReplyRuleRow {
+  id: string;
+  effect: string;
+  subject_type: string;
+  subject_key: string | null;
+  subject_label: string;
+  conditions: string | null;
+  expires_at: number | null;
+  source: string;
+  utterance: string | null;
+  created_at: number;
+  [k: string]: string | number | null;
+}
+
+interface ReplyCardRow {
+  proposal_id: string;
+  subject_key: string;
+  relation_key: string;
+  is_group: number;
+  contact_key: string;
+  contact_name: string;
+  group_key: string | null;
+  group_name: string | null;
+  category: string | null;
+  exploration: number;
+  active: number;
+  status: string;
+  created_at: number;
+  expires_at: number;
+  [k: string]: string | number | null;
+}
+
+/** Outcomes that count as a decision on a card (for the "You used X of your last Y" line). */
+const DECIDED_OUTCOMES = ["wanted", "not_now", "never", "ignored"];
+const PENDING_RULE_TTL_MS = 10 * 60_000;
 
 export class BrainCore {
   private readonly sql: SqlLike;
@@ -403,10 +447,10 @@ export class BrainCore {
 
   /** "Forget me": wipes memories, preferences, decisions, mood (and other personal history). */
   forget(): void {
-    for (const t of ["memories", "preferences", "decisions", "proposals", "context", "digest", "contacts", "interactions", "threads", "reminders"]) {
+    for (const t of ["memories", "preferences", "decisions", "proposals", "context", "digest", "contacts", "interactions", "threads", "reminders", "reply_rules", "reply_events", "reply_stats", "reply_cards", "conversations"]) {
       this.sql.exec(`DELETE FROM ${t}`);
     }
-    for (const k of ["mood", "promoted", "blocked", "promotion_asked", "pending_promotion", "transcript", "last_caption", "pending_ask", "digest_rules", "ide_state"]) this.kv.delete(k);
+    for (const k of ["mood", "promoted", "blocked", "promotion_asked", "pending_promotion", "transcript", "last_caption", "pending_ask", "digest_rules", "ide_state", "reply_explore", "pending_reply_rule"]) this.kv.delete(k);
     this.memCache = null;
   }
 
@@ -514,7 +558,7 @@ export class BrainCore {
     };
   }
 
-  private propose(p: { kind: ProposalKind | "digest_rule"; title: string; detail: string; payload: Record<string, unknown>; executor: Executor; pattern: string; targetDevice?: string | null }): ProposeData {
+  private propose(p: { kind: ProposalKind | "digest_rule"; title: string; detail: string; payload: Record<string, unknown>; executor: Executor; pattern: string; targetDevice?: string | null; card?: Pick<ProposeData, "why" | "exploration" | "quick_actions"> }): ProposeData {
     const id = newId("prp");
     const now = this.now();
     const data: ProposeData = {
@@ -525,6 +569,7 @@ export class BrainCore {
       payload: p.payload,
       executor: p.executor,
       expires_at: now + PROPOSAL_TTL_MS,
+      ...(p.card ?? {}),
     };
     this.sql.exec(
       "INSERT INTO proposals (id, kind, title, detail, payload, executor, pattern, target_device, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
@@ -585,6 +630,10 @@ export class BrainCore {
         return;
       }
     }
+
+    // Reply-card rules ("always show me reply options for Mom", "Priya is from work", ...)
+    if (await this.handleReplyCommand(text, o)) return;
+    this.markCardsActive();
 
     // "look at this" → fresh frame first
     if (o.kind === "mac" && /\b(look at|see) (this|that|my screen|the screen)\b|\bwhat('?s| is) on (my |the )?screen\b|\bwhat am i (looking at|watching)\b|\bscreen\b.*\?/i.test(text)) {
@@ -741,6 +790,7 @@ export class BrainCore {
       ...(d.focus_mode !== undefined ? { focus_mode: d.focus_mode } : {}),
       ...(d.watching !== undefined ? { watching: d.watching } : {}),
     });
+    if (next.activity !== "away" && !isFocused(next.activity, next.focus_mode)) this.markCardsActive();
     const becameIdle = prev.activity !== "idle" && next.activity === "idle";
     if (becameIdle || (prev.focus_mode && !next.focus_mode && next.activity === "idle")) await this.flushDigest(true);
     if (!prev.watching && next.watching) {
@@ -805,13 +855,15 @@ export class BrainCore {
   private async onMessage(d: PhoneMessageData, o: Origin): Promise<void> {
     const senderKey = nameKey(d.from);
     const contact = await this.touchContact(d.from, null, "message");
+    this.touchConversation(d);
+    const mentioned = !d.is_group || mentionsUser(d.preview, this.userName);
     if (d.replyable && d.key) this.setThread(d.from, { msg_key: d.key });
     const repeats = this.recentFrom(senderKey, "message");
     const heur = heuristicUrgency({ preview: d.preview, importance: contact.importance, recentFromSender: repeats, isGroup: d.is_group });
-    let cls = { urgency: null as number | null, summary: `${d.from} sent a message${d.is_group && d.conversation ? ` in ${d.conversation}` : ""}`, expects_reply: null as boolean | null };
+    let cls = fallbackClassification(d, mentioned);
     if (this.budget("background")) {
       this.noteModelCall();
-      cls = await classifyMessage(this.rt.ai, d, contact.relation);
+      cls = await classifyMessage(this.rt.ai, d, contact.relation, { mentioned });
     }
     const urgency = blendUrgency(heur, cls.urgency, hasEmergencyKeyword(d.preview), repeats);
     const obs = messageObservation(d, urgency, contact.importance, cls.summary);
@@ -861,33 +913,8 @@ export class BrainCore {
       }
     }
 
-    // Draft a reply if the message seems to expect one.
-    if (shouldDraftReply(d) && cls.expects_reply !== false) {
-      const t = this.tierFor("whatsapp.reply", d.from);
-      // Replies Pixie drafts on its own for incoming messages stay suggestions in both modes;
-      // full autonomy only removes the tap for messages the user asks Pixie to send.
-      if ((t.tier === "propose" || t.tier === "auto") && this.budget("background")) {
-        const fb = this.sql
-          .exec<{ final: string | null }>("SELECT final FROM decisions WHERE kind = 'whatsapp.reply' AND verdict = 'approve' AND final IS NOT NULL ORDER BY ts DESC LIMIT 4")
-          .toArray()
-          .map((r) => truncate(r.final!, 120));
-        const draft = await draftReply(
-          this.rt.ai,
-          buildDraftMessages({ userName: this.userName, from: d.from, relation: contact.relation, preview: d.preview, styleNotes: this.preferences().slice(0, 5), examples: fb }),
-          this.noteModelCall,
-        );
-        if (draft && (this.rt.autonomy === "full" || decideTier({ kind: "whatsapp.reply", target: d.from, text: draft }, { promoted: new Set(), blocked: new Set() }).tier === "propose")) {
-          this.propose({
-            kind: "whatsapp.reply",
-            title: `Reply to ${d.from}?`,
-            detail: `"${draft}"`,
-            payload: { key: d.key, to: d.from, text: draft },
-            executor: "android",
-            pattern: t.pattern,
-          });
-        }
-      }
-    }
+    // Reply card: explicit rules first, then the learned per-contact / per-group score (replies.ts).
+    if (canOfferReply(d)) await this.maybeReplyCard(d, contact, mentioned, cls);
     void obs;
   }
 
@@ -1032,6 +1059,7 @@ export class BrainCore {
     if (this.now() > Number(p.expires_at)) {
       this.sql.exec("UPDATE proposals SET status = 'expired' WHERE id = ?", p.id);
       this.logDecision({ proposal_id: p.id, kind: p.kind, pattern: p.pattern, verdict: "expired", draft });
+      if (p.kind === "whatsapp.reply") this.cardOutcome(p.id, "ignored");
       this.perform(perf({ say: "Oops, that suggestion went stale. Want me to try again?", emotion: "shy", intensity: 0.4, gesture: "shake" }, o.eventId), o);
       return;
     }
@@ -1039,7 +1067,11 @@ export class BrainCore {
     if (d.verdict !== "approve") {
       this.sql.exec("UPDATE proposals SET status = ? WHERE id = ?", d.verdict === "never" ? "never" : "rejected", p.id);
       this.logDecision({ proposal_id: p.id, kind: p.kind, pattern: p.pattern, verdict: d.verdict, draft });
-      if (d.verdict === "never") {
+      const card = p.kind === "whatsapp.reply" ? this.cardOutcome(p.id, d.verdict === "never" ? "never" : "not_now") : null;
+      if (d.verdict === "never" && p.kind === "whatsapp.reply") {
+        const say = this.neverFromCard(card, d.scope, payload);
+        this.perform(perf({ say, emotion: "neutral", intensity: 0.4, gesture: "nod" }, o.eventId), o);
+      } else if (d.verdict === "never") {
         this.addToSet("blocked", p.pattern);
         this.perform(perf({ say: "Got it, I won't suggest that again.", emotion: "neutral", intensity: 0.4, gesture: "nod" }, o.eventId), o);
       } else {
@@ -1061,6 +1093,7 @@ export class BrainCore {
       payload.text = d.edited_text;
     }
     this.logDecision({ proposal_id: p.id, kind: p.kind, pattern: p.pattern, verdict: "approve", draft, final: finalText });
+    if (p.kind === "whatsapp.reply") this.cardOutcome(p.id, "wanted");
 
     const exec = p.executor as Executor;
     if (exec === "brain") {
@@ -1102,6 +1135,310 @@ export class BrainCore {
       this.perform(perf({ say, emotion: "happy", intensity: 0.5, gesture: "nod", speak: !!say }));
     } else {
       this.perform(perf({ say: "Uh oh, that didn't work on the device. Maybe try it by hand?", emotion: "sad", intensity: 0.5, gesture: "shake" }));
+    }
+  }
+
+  // ---- smart reply cards (replies.ts, PROTOCOL.md §5) ------------------------------------------------------------
+
+  private touchConversation(d: PhoneMessageData): void {
+    const name = d.is_group ? d.conversation : (d.conversation ?? d.from);
+    if (!name?.trim()) return;
+    this.sql.exec(
+      `INSERT INTO conversations (name_key, name, is_group, messages, last_ts) VALUES (?, ?, ?, 1, ?)
+       ON CONFLICT(name_key, is_group) DO UPDATE SET name = excluded.name, messages = conversations.messages + 1, last_ts = excluded.last_ts`,
+      nameKey(name), truncate(name.trim(), 100), d.is_group ? 1 : 0, this.now(),
+    );
+  }
+
+  /** The user can see a card right now (Mac online, not away / in a meeting / focusing). */
+  private userPresent(): boolean {
+    const st = this.state;
+    return this.online("mac").length > 0 && st.activity !== "away" && !isFocused(st.activity, st.focus_mode);
+  }
+
+  /** The user is around: pending cards they now leave alone count as "ignored while active". */
+  private markCardsActive(): void {
+    this.sql.exec("UPDATE reply_cards SET active = 1 WHERE status = 'pending' AND active = 0 AND expires_at > ?", this.now());
+  }
+
+  replyRules(includeExpired = false): ReplyRule[] {
+    return this.sql
+      .exec<ReplyRuleRow>("SELECT * FROM reply_rules ORDER BY created_at DESC")
+      .toArray()
+      .map((r) => ({
+        id: r.id,
+        effect: r.effect as ReplyRule["effect"],
+        subject_type: r.subject_type as SubjectType,
+        subject_key: r.subject_key,
+        subject_label: r.subject_label,
+        conditions: r.conditions ? (JSON.parse(r.conditions) as RuleConditions) : null,
+        expires_at: r.expires_at == null ? null : Number(r.expires_at),
+        source: r.source as RuleSource,
+        utterance: r.utterance,
+        created_at: Number(r.created_at),
+      }))
+      .filter((r) => includeExpired || ruleActive(r, this.now()));
+  }
+
+  /** Add a rule; a rule for the same subject (same scope key) replaces the old one. */
+  private addReplyRule(r: NewRule, extra: { source: RuleSource; utterance?: string | null; expires_at?: number | null }): ReplyRule {
+    const rule: ReplyRule = { ...r, id: newId("rr"), source: extra.source, utterance: extra.utterance ? truncate(extra.utterance, 300) : null, expires_at: extra.expires_at ?? null, created_at: this.now() };
+    const scope = ruleScopeKey(rule);
+    this.sql.exec("DELETE FROM reply_rules WHERE scope_key = ?", scope);
+    if (rule.effect !== "never" && rule.subject_type === "contact" && rule.subject_key && !rule.conditions?.chat) {
+      const blocked = this.set("blocked");
+      if (blocked.delete(patternKey("whatsapp.reply", rule.subject_key))) this.kv.set("blocked", [...blocked]);
+    }
+    this.sql.exec(
+      "INSERT INTO reply_rules (id, effect, subject_type, subject_key, subject_label, scope_key, conditions, expires_at, source, utterance, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      rule.id, rule.effect, rule.subject_type, rule.subject_key, truncate(rule.subject_label, 100), scope, rule.conditions ? JSON.stringify(rule.conditions) : null,
+      rule.expires_at, rule.source, rule.utterance, rule.created_at,
+    );
+    return rule;
+  }
+
+  /** GET /v1/reply-rules (active rules only). */
+  replyRulesDump(): { rules: unknown[] } {
+    return {
+      rules: this.replyRules().map((r) => ({
+        id: r.id, effect: r.effect, subject_type: r.subject_type, subject_label: r.subject_label, conditions: r.conditions,
+        expires_at: r.expires_at, source: r.source, utterance: r.utterance, created_at: r.created_at,
+      })),
+    };
+  }
+
+  /** DELETE /v1/reply-rules/:id */
+  deleteReplyRule(id: string): boolean {
+    const n = this.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM reply_rules WHERE id = ?", id).toArray()[0]?.n ?? 0;
+    if (!Number(n)) return false;
+    const r = this.replyRules(true).find((x) => x.id === id);
+    this.sql.exec("DELETE FROM reply_rules WHERE id = ?", id);
+    if (r?.effect === "never" && r.subject_type === "contact" && r.subject_key && (r.conditions?.chat ?? "dm") === "dm" && !r.conditions?.categories?.length) {
+      const pat = patternKey("whatsapp.reply", r.subject_key);
+      const blocked = this.set("blocked");
+      if (blocked.delete(pat)) this.kv.set("blocked", [...blocked]);
+    }
+    return true;
+  }
+
+  /** POST /v1/reply-rules/reset-learning: clears learned reply stats, keeps rules. */
+  resetReplyLearning(): void {
+    for (const t of ["reply_events", "reply_stats", "reply_cards"]) this.sql.exec(`DELETE FROM ${t}`);
+    this.kv.delete("reply_explore");
+  }
+
+  private replyStats(key: string): Counts {
+    const r = this.sql.exec<{ pos: number; neg: number; updated_at: number }>("SELECT pos, neg, updated_at FROM reply_stats WHERE key = ?", key).toArray()[0];
+    return r ? decayed({ pos: Number(r.pos), neg: Number(r.neg) }, Number(r.updated_at), this.now()) : ZERO;
+  }
+
+  private addReplyEvidence(keys: string[], ev: Counts): void {
+    if (!ev.pos && !ev.neg) return;
+    for (const k of keys) {
+      const c = this.replyStats(k);
+      this.sql.exec(
+        "INSERT INTO reply_stats (key, pos, neg, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET pos = excluded.pos, neg = excluded.neg, updated_at = excluded.updated_at",
+        k, c.pos + ev.pos, c.neg + ev.neg, this.now(),
+      );
+    }
+  }
+
+  /** Record what happened to a reply card (keys and counts only). Returns the card, or null if untracked / already decided. */
+  private cardOutcome(proposalId: string, outcome: Outcome, at = this.now()): ReplyCardRow | null {
+    const card = this.sql.exec<ReplyCardRow>("SELECT * FROM reply_cards WHERE proposal_id = ?", proposalId).toArray()[0];
+    if (!card || card.status !== "pending") return card ?? null;
+    this.sql.exec("UPDATE reply_cards SET status = ? WHERE proposal_id = ?", outcome, proposalId);
+    const active = outcome === "ignored" ? Number(card.active) : 1;
+    this.sql.exec(
+      "INSERT INTO reply_events (subject_key, relation_key, is_group, outcome, active, category, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      card.subject_key, card.relation_key, Number(card.is_group), outcome, active, card.category, at,
+    );
+    this.addReplyEvidence([card.subject_key, card.relation_key, globalKey(!!Number(card.is_group))], outcomeEvidence(outcome, !!active));
+    return card;
+  }
+
+  /** Pending cards past their expiry were ignored. */
+  private expireReplyCards(): number {
+    const due = this.sql.exec<{ proposal_id: string; expires_at: number }>("SELECT proposal_id, expires_at FROM reply_cards WHERE status = 'pending' AND expires_at <= ?", this.now()).toArray();
+    for (const c of due) this.cardOutcome(c.proposal_id, "ignored", Number(c.expires_at));
+    return due.length;
+  }
+
+  /** "Never" on a reply card → a rule with the scope the user picked. Returns the confirmation line. */
+  private neverFromCard(card: ReplyCardRow | null, scope: FeedbackScope | undefined, payload: Record<string, unknown>): string {
+    const to = typeof payload.to === "string" && payload.to.trim() ? payload.to.trim() : "them";
+    const c = card
+      ? { isGroup: !!Number(card.is_group), contactKey: card.contact_key, contactName: card.contact_name, groupKey: card.group_key, groupName: card.group_name, category: card.category }
+      : { isGroup: false, contactKey: nameKey(to), contactName: to, groupKey: null, groupName: null, category: null };
+    const r = this.addReplyRule(neverRuleFor(scope, c), { source: "button" });
+    // As before this feature: a DM "never" also blocks the pattern for replies the model drafts on request.
+    if (r.subject_type === "contact" && !r.conditions) this.addToSet("blocked", patternKey("whatsapp.reply", r.subject_key));
+    if (r.conditions?.categories?.length) return `Got it, no suggestions for messages like that ${r.subject_type === "group" ? `in ${r.subject_label}` : `from ${r.subject_label}`}.`;
+    if (r.subject_type === "group") return `Got it, no more reply suggestions in ${r.subject_label}.`;
+    return r.conditions?.chat === "group" ? `Got it, no more reply suggestions for ${r.subject_label} in groups.` : `Got it, no more reply suggestions for ${r.subject_label}.`;
+  }
+
+  /** Decide whether to show a reply card for this message, and propose one if so. */
+  private async maybeReplyCard(d: PhoneMessageData, contact: Contact, mentioned: boolean, cls: { p_reply: number; category: string }): Promise<void> {
+    this.expireReplyCards();
+    const ctx: MessageContext = {
+      isGroup: d.is_group,
+      contactKey: nameKey(d.from),
+      groupKey: d.is_group ? nameKey(d.conversation ?? "") || null : null,
+      relation: relationBucket(contact.relation),
+      mentioned,
+      text: d.preview,
+      category: cls.category,
+      now: this.now(),
+    };
+    const sk = subjectKey(ctx);
+    const recent = this.sql
+      .exec<{ outcome: string }>(`SELECT outcome FROM reply_events WHERE subject_key = ? AND outcome IN (${DECIDED_OUTCOMES.map(() => "?").join(",")}) ORDER BY ts DESC LIMIT 8`, sk, ...DECIDED_OUTCOMES)
+      .toArray();
+    const today = istDayKey(this.now());
+    const ex = this.kv.get<{ day: string; n: number }>("reply_explore", { day: today, n: 0 });
+    const used = ex.day === today ? ex.n : 0;
+    const dec = decideReplyCard({
+      ctx,
+      rules: this.replyRules(),
+      stats: { global: this.replyStats(globalKey(ctx.isGroup)), relation: this.replyStats(relationKey(ctx)), subject: this.replyStats(sk) },
+      history: { used: recent.filter((r) => r.outcome === "wanted").length, total: recent.length },
+      pReply: cls.p_reply,
+      names: { contact: d.from, group: d.conversation },
+      explore: { usedToday: used, roll: (this.rt.random ?? Math.random)() },
+    });
+    this.log({ evt: "reply_card", show: dec.show, reason: dec.reason, score: dec.score });
+    if (!dec.show || !this.budget("background")) return;
+
+    const pattern = patternKey("whatsapp.reply", d.from);
+    const fb = this.sql
+      .exec<{ final: string | null }>("SELECT final FROM decisions WHERE kind = 'whatsapp.reply' AND verdict = 'approve' AND final IS NOT NULL ORDER BY ts DESC LIMIT 4")
+      .toArray()
+      .map((r) => truncate(r.final!, 120));
+    const draft = await draftReply(
+      this.rt.ai,
+      buildDraftMessages({ userName: this.userName, from: d.from, relation: contact.relation, preview: d.preview, styleNotes: this.preferences().slice(0, 5), examples: fb }),
+      this.noteModelCall,
+    );
+    // Replies Pixie drafts on its own stay suggestions in both modes; guarded mode also checks the text.
+    if (!draft || (this.rt.autonomy !== "full" && decideTier({ kind: "whatsapp.reply", target: d.from, text: draft }, { promoted: new Set(), blocked: new Set() }).tier !== "propose")) return;
+    if (dec.exploration) this.kv.set("reply_explore", { day: today, n: used + 1 });
+    const data = this.propose({
+      kind: "whatsapp.reply",
+      title: d.is_group && d.conversation ? `Reply to ${d.from} in ${d.conversation}?` : `Reply to ${d.from}?`,
+      detail: `"${draft}"`,
+      payload: { key: d.key, to: d.from, text: draft },
+      executor: "android",
+      pattern,
+      card: { why: truncate(dec.why, 120), exploration: dec.exploration, quick_actions: quickActions(d.is_group, d.from, d.conversation) },
+    });
+    this.sql.exec(
+      `INSERT INTO reply_cards (proposal_id, subject_key, relation_key, is_group, contact_key, contact_name, group_key, group_name, category, exploration, active, status, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+      data.proposal_id, sk, relationKey(ctx), ctx.isGroup ? 1 : 0, ctx.contactKey, d.from, ctx.groupKey, d.is_group ? d.conversation : null, cls.category,
+      dec.exploration ? 1 : 0, this.userPresent() ? 1 : 0, this.now(), data.expires_at,
+    );
+  }
+
+  /** Name candidates for rule targets: contacts plus chats and groups seen in notifications. */
+  private nameCandidates(): NameCandidate[] {
+    const contacts = this.sql.exec<{ name_key: string; name: string }>("SELECT name_key, name FROM contacts").toArray().map((r) => ({ type: "contact" as const, key: r.name_key, label: r.name }));
+    const convs = this.sql
+      .exec<{ name_key: string; name: string; is_group: number }>("SELECT name_key, name, is_group FROM conversations")
+      .toArray()
+      .map((r) => ({ type: Number(r.is_group) ? ("group" as const) : ("contact" as const), key: r.name_key, label: r.name }));
+    return [...contacts, ...convs];
+  }
+
+  /**
+   * Natural-language reply rules from user.say. Regex prefilter; model JSON parse with a regex
+   * fallback; names resolved against contacts / conversations; asks when ambiguous. Returns true if handled.
+   */
+  private async handleReplyCommand(text: string, o: Origin): Promise<boolean> {
+    const pending = this.kv.get<{ cmd: ParsedCommand; options: NameCandidate[]; utterance: string; ts: number } | null>("pending_reply_rule", null);
+    if (pending) {
+      this.kv.delete("pending_reply_rule");
+      if (this.now() - pending.ts < PENDING_RULE_TTL_MS) {
+        const pick = pickOption(text, pending.options);
+        if (pick) {
+          this.applyReplyCommand(pending.cmd, pick, pending.utterance, o);
+          return true;
+        }
+      }
+    }
+    if (!looksLikeReplyCommand(text)) return false;
+    let cmd: ParsedCommand | null = null;
+    if (this.modelCallsLastHour() < MAX_MODEL_CALLS_PER_HOUR) {
+      try {
+        this.noteModelCall();
+        const res = await this.rt.ai.chat(buildRuleParseMessages(text), { maxTokens: 160, temperature: 0 });
+        const m = parseModelCommand(parseJsonObject(res.text), this.now());
+        if (m && m !== "not_rule") cmd = m;
+      } catch {
+        /* regex fallback */
+      }
+    }
+    cmd ??= parseReplyCommand(text, this.now());
+    if (!cmd) return false;
+
+    const name = cmd.kind === "relation" ? cmd.name : cmd.target.type === "name" ? cmd.target.name : null;
+    if (name == null) {
+      this.applyReplyCommand(cmd, null, text, o);
+      return true;
+    }
+    const hint = cmd.kind === "relation" ? "contact" : cmd.target.type === "name" ? cmd.target.hint : null;
+    const res = resolveName(name, hint, this.nameCandidates());
+    if (res.kind === "ambiguous") {
+      this.kv.set("pending_reply_rule", { cmd, options: res.options, utterance: text, ts: this.now() });
+      const opts = res.options.map((c, i) => `${i + 1}) ${c.label}${c.type === "group" ? " (group)" : ""}`).join(", ");
+      this.perform(perf({ say: `Which one do you mean? ${opts}`, emotion: "curious", intensity: 0.5, gesture: "lean_in", gaze: "user" }, o.eventId), o);
+      return true;
+    }
+    this.applyReplyCommand(cmd, res.c, text, o);
+    return true;
+  }
+
+  private applyReplyCommand(cmd: ParsedCommand, who: NameCandidate | null, utterance: string, o: Origin): void {
+    let say: string;
+    if (cmd.kind === "relation") {
+      const label = who?.label ?? cmd.name;
+      const key = who?.key ?? nameKey(label);
+      this.sql.exec(
+        "INSERT INTO contacts (name, name_key, relation, importance, interactions, last_ts) VALUES (?, ?, ?, ?, 0, ?) ON CONFLICT(name_key) DO UPDATE SET relation = excluded.relation",
+        label, key, cmd.relation, guessImportance(label, cmd.relation), this.now(),
+      );
+      say = `Got it, ${label} is ${cmd.relation === "work" ? "from work" : cmd.relation === "friend" ? "a friend" : "family"}.`;
+    } else {
+      const t = cmd.target;
+      let rule: NewRule;
+      if (t.type === "name") {
+        const isGroup = who?.type === "group";
+        rule = { effect: cmd.effect, subject_type: isGroup ? "group" : "contact", subject_key: who?.key ?? nameKey(t.name), subject_label: who?.label ?? t.name, conditions: cmd.conditions };
+      } else if (t.type === "relation") {
+        rule = { effect: cmd.effect, subject_type: "relation", subject_key: t.relation, subject_label: t.word, conditions: cmd.conditions };
+      } else {
+        const label = t.type === "all" ? "everyone" : t.type === "all_groups" ? "all groups" : "personal chats";
+        rule = { effect: cmd.effect, subject_type: t.type, subject_key: null, subject_label: label, conditions: cmd.conditions };
+      }
+      const r = this.addReplyRule(rule, { source: "chat", utterance, expires_at: cmd.expires_at });
+      say = confirmLine(r.effect, r.subject_label, r.subject_type, r.expires_at, this.now());
+    }
+    this.perform(perf({ say, emotion: "happy", intensity: 0.5, gesture: "nod", gaze: "user", speak: false }, o.eventId), o);
+  }
+
+  /** Nightly: expired cards → ignored, temporary rules expire, stats rebuilt from events, old events purged. */
+  private learnReplies(now: number): void {
+    this.expireReplyCards();
+    this.sql.exec("DELETE FROM reply_rules WHERE expires_at IS NOT NULL AND expires_at <= ?", now);
+    this.sql.exec("DELETE FROM reply_events WHERE ts < ?", now - EVENT_RETENTION_MS);
+    this.sql.exec("DELETE FROM reply_cards WHERE status != 'pending' AND created_at < ?", now - 7 * 86_400_000);
+    const events = this.sql
+      .exec<{ subject_key: string; relation_key: string; is_group: number; outcome: string; active: number; ts: number }>("SELECT subject_key, relation_key, is_group, outcome, active, ts FROM reply_events")
+      .toArray()
+      .map((e) => ({ ...e, ts: Number(e.ts) }));
+    this.sql.exec("DELETE FROM reply_stats");
+    for (const [k, c] of recomputeStats(events, now)) {
+      this.sql.exec("INSERT INTO reply_stats (key, pos, neg, updated_at) VALUES (?, ?, ?, ?)", k, c.pos, c.neg, now);
     }
   }
 
@@ -1272,6 +1609,9 @@ export class BrainCore {
           contactUpdates++;
         }
       }
+
+      // 5) reply cards: expired cards count as ignored, temporary rules expire, stats rebuilt from events
+      this.learnReplies(t0);
 
       // housekeeping
       this.sql.exec("DELETE FROM interactions WHERE ts < ?", t0 - 30 * 86_400_000);

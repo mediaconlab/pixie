@@ -214,3 +214,17 @@ no FOMO, never argue with a goodbye, never mention places the user has been, nev
 | `GET /v1/reply-rules` | `{ "rules": [ { "id", "effect": "always"\|"never"\|"only", "subject_type": "contact"\|"group"\|"relation"\|"all_groups"\|"all_dms"\|"all", "subject_label": "Mom", "conditions": { ... } \| null, "expires_at": ts \| null, "source": "chat"\|"button"\|"migrated", "utterance": "always show me reply options for Mom" \| null, "created_at": ts } ] }` (active rules only) |
 | `DELETE /v1/reply-rules/:id` | `{ "ok": true }` |
 | `POST /v1/reply-rules/reset-learning` | `{ "ok": true }` — clears learned reply stats, keeps rules |
+
+Notes (additive, all optional; older apps ignore them):
+
+- `exploration: true` marks a card shown to learn the user's taste (score just under the threshold); at most 3 per
+  day, DMs only, and `why` says so. Apps should label it (e.g. "Trying this out").
+- `quick_actions[].id` is `never_contact` (→ `scope: "contact"`) or `never_group` (→ `scope: "group"`). On a
+  **group** card `never_contact` covers that person's messages *in groups only*; their DMs keep cards. A plain
+  `verdict: "never"` with no `scope` blocks the group on a group card and the contact on a DM card.
+- `scope: "like_this"` limits the new rule to the card's message category (question, request, plan, ...).
+- `conditions` keys in `GET /v1/reply-rules`: `keywords_any: [string]`, `mention_only: bool`,
+  `unless_mentioned: bool`, `time: { "from_hour", "to_hour" }` (IST, wraps past midnight), `categories: [string]`,
+  and for contact rules `chat: "dm"|"group"|"any"` (absent = `"dm"`).
+- `DELETE /v1/reply-rules/:id` answers `404 {"error":"not_found"}` for an unknown id. `DELETE /v1/memory` also
+  wipes reply rules and learned reply stats.

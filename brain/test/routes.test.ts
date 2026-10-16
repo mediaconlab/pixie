@@ -156,6 +156,21 @@ describe("REST", () => {
     expect(E.doCalls.filter((c) => c.path === "/memory").every((c) => c.user === owner.user_id)).toBe(true);
   });
 
+  it("reply-rules routes require auth and go to the user's DO", async () => {
+    const owner = (await (await register()).json()) as any;
+    expect((await call("/v1/reply-rules")).status).toBe(401);
+    expect((await call("/v1/reply-rules/rr_1", { method: "DELETE" })).status).toBe(401);
+    expect((await call("/v1/reply-rules/reset-learning", { method: "POST" })).status).toBe(401);
+    E.doCalls.length = 0;
+    expect((await call("/v1/reply-rules", { token: owner.token })).status).toBe(200);
+    expect((await call("/v1/reply-rules/rr_1", { method: "DELETE", token: owner.token })).status).toBe(200);
+    const r = await call("/v1/reply-rules/reset-learning", { method: "POST", token: owner.token });
+    expect(r.headers.get("access-control-allow-origin")).toBe("*");
+    expect(E.doCalls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /reply-rules", "DELETE /reply-rules/rr_1", "POST /reply-rules/reset-learning"]);
+    expect(E.doCalls.every((c) => c.user === owner.user_id)).toBe(true);
+    expect((await call("/v1/reply-rules/bad id!", { method: "DELETE", token: owner.token })).status).toBe(404);
+  });
+
   it("ws: requires upgrade header; forwards identity headers; accepts ?token=", async () => {
     const owner = (await (await register()).json()) as any;
     expect((await call("/v1/ws", { token: owner.token })).status).toBe(426);

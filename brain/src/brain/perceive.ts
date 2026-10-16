@@ -6,6 +6,7 @@ import type { Brainpower } from "../ai";
 import { parseJsonObject } from "../ai";
 import type { IdeContextData, PhoneCallData, PhoneMessageData, ScreenFrameData } from "../protocol";
 import { clamp, fnv1a, sha256Hex, truncate } from "../util";
+import { CATEGORIES, type Category, combinePReply, heuristicReply } from "./replies";
 
 export interface Contact {
   name: string;
@@ -135,18 +136,27 @@ export interface MessageClassification {
   urgency: number | null;
   summary: string;
   expects_reply: boolean | null;
+  /** how likely the user wants to reply, 0..1 (model when available, heuristic otherwise) */
+  p_reply: number;
+  category: Category;
 }
 
-/** Short JSON-mode model classification. Never throws; returns nulls on failure. */
-export async function classifyMessage(ai: Brainpower, d: PhoneMessageData, relation: string | null): Promise<MessageClassification> {
-  const fallback: MessageClassification = { urgency: null, summary: defaultSummary(d), expects_reply: null };
+/** Classification without a model call (budget exhausted / model failure). */
+export function fallbackClassification(d: PhoneMessageData, mentioned = false): MessageClassification {
+  const h = heuristicReply(d.preview, d.is_group, mentioned);
+  return { urgency: null, summary: defaultSummary(d), expects_reply: null, p_reply: h.p_reply, category: h.category };
+}
+
+/** Short JSON-mode model classification. Never throws; falls back to heuristics on failure. */
+export async function classifyMessage(ai: Brainpower, d: PhoneMessageData, relation: string | null, opts: { mentioned?: boolean } = {}): Promise<MessageClassification> {
+  const fallback = fallbackClassification(d, opts.mentioned ?? false);
   try {
     const res = await ai.chat(
       [
         {
           role: "system",
           content:
-            'You triage phone notifications. Reply ONLY with JSON: {"urgency": number 0..1, "summary": "<=12 words, third person, no quotes", "expects_reply": boolean}. Urgency 0.9+ = emergency, 0.6 = wants attention soon, 0.3 = casual, 0.1 = promo/automated.',
+            `You triage phone notifications. Reply ONLY with JSON: {"urgency": number 0..1, "summary": "<=12 words, third person, no quotes", "expects_reply": boolean, "p_reply": number 0..1, "category": one of ${JSON.stringify(CATEGORIES)}}. Urgency 0.9+ = emergency, 0.6 = wants attention soon, 0.3 = casual, 0.1 = promo/automated. p_reply = how likely the user would want to send a reply to this message (group chatter not addressed to the user is low).`,
         },
         {
           role: "user",
@@ -155,18 +165,21 @@ export async function classifyMessage(ai: Brainpower, d: PhoneMessageData, relat
             from: d.from,
             relation,
             group: d.is_group ? d.conversation : null,
+            mentioned: d.is_group ? !!opts.mentioned : undefined,
             message: truncate(d.preview, 500),
           }),
         },
       ],
-      { maxTokens: 80, temperature: 0.2 },
+      { maxTokens: 100, temperature: 0.2 },
     );
     const j = parseJsonObject(res.text);
     if (!j) return fallback;
     const u = typeof j.urgency === "number" ? clamp(j.urgency, 0, 1) : null;
     const s = typeof j.summary === "string" && j.summary.trim() ? truncate(j.summary.trim(), 120) : fallback.summary;
     const e = typeof j.expects_reply === "boolean" ? j.expects_reply : null;
-    return { urgency: u, summary: s, expects_reply: e };
+    const mp = typeof j.p_reply === "number" && Number.isFinite(j.p_reply) ? clamp(j.p_reply, 0, 1) : null;
+    const cat = CATEGORIES.find((c) => c === j.category) ?? fallback.category;
+    return { urgency: u, summary: s, expects_reply: e, p_reply: combinePReply(mp, e, fallback.p_reply), category: cat };
   } catch {
     return fallback;
   }

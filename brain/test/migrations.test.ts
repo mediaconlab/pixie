@@ -16,7 +16,7 @@ describe("DO schema migrations", () => {
     const sql = memorySql();
     expect(migrate(sql)).toBe(LATEST_SCHEMA_VERSION);
     expect(schemaVersion(sql)).toBe(LATEST_SCHEMA_VERSION);
-    expect(tables(sql)).toEqual(expect.arrayContaining(["kv", "memories", "preferences", "contacts", "interactions", "threads", "decisions", "proposals", "context", "digest", "reminders", "model_calls", "schema_version"]));
+    expect(tables(sql)).toEqual(expect.arrayContaining(["kv", "memories", "preferences", "contacts", "interactions", "threads", "decisions", "proposals", "context", "digest", "reminders", "model_calls", "schema_version", "reply_rules", "reply_events", "reply_stats", "reply_cards", "conversations"]));
   });
 
   it("a pre-versioning database (old SCHEMA, no version table) upgrades cleanly and keeps its data", () => {
