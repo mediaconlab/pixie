@@ -127,14 +127,15 @@ final class LinkClient {
         guard t === task else { return }
         backoff.reset()
         lastPong = Date()
-        setOpen(true)
 
-        // hello must be the first frame after connect.
+        // hello must be the first frame after connect, so it goes out before setOpen(true)
+        // (observers of the open state send state.update straight away).
         let hello = HelloData(kind: "mac", name: helloName, app_version: ProtocolConstants.appVersion,
                               capabilities: ["screen", "audio", "voice", "notify"])
         if let env = Envelope.make("hello", hello) {
             transmit(env, on: t)
         }
+        setOpen(true)
         flushQueue(on: t)
 
         pingTimer?.invalidate()

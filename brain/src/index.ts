@@ -55,7 +55,7 @@ function brainStub(env: Env, userId: string) {
 function toBrain(env: Env, dev: DeviceWithUser, path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set("X-User-Id", dev.user_id);
-  headers.set("X-User-Name", dev.user_name);
+  headers.set("X-User-Name", encodeURIComponent(dev.user_name));
   headers.set("X-Device-Id", dev.id);
   headers.set("X-Device-Kind", dev.kind);
   return brainStub(env, dev.user_id).fetch(`https://brain${path}`, { ...init, headers });
@@ -127,10 +127,10 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext): Pro
       if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return err(426, "upgrade_required", "expected a WebSocket upgrade");
       const headers = new Headers(req.headers);
       headers.set("X-User-Id", dev.user_id);
-      headers.set("X-User-Name", dev.user_name);
+      headers.set("X-User-Name", encodeURIComponent(dev.user_name));
       headers.set("X-Device-Id", dev.id);
       headers.set("X-Device-Kind", dev.kind);
-      headers.set("X-Device-Name", dev.name);
+      headers.set("X-Device-Name", encodeURIComponent(dev.name));
       return brainStub(env, dev.user_id).fetch(new Request("https://brain/ws", { method: "GET", headers }));
     }
 

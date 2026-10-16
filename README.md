@@ -13,7 +13,7 @@ The wire contract between all of them is [`PROTOCOL.md`](PROTOCOL.md).
 
 ## Setup
 
-1. **Secrets** (repo Settings → Secrets and variables → Actions): `CLOUDFLARE_API_TOKEN` (permissions: Workers Scripts Edit, D1 Edit, Workers AI Read) and `CLOUDFLARE_ACCOUNT_ID`.
+1. **Secret** (repo Settings → Secrets and variables → Actions): `CLOUDFLARE_API_TOKEN`, made from the *Edit Cloudflare Workers* template plus D1 Edit and Workers AI Read. `CLOUDFLARE_ACCOUNT_ID` is optional; it's only needed if the token can see more than one account.
 2. **Deploy the orchestrator:** push to `main` (or run the *Orchestrator* workflow). It applies D1 migrations, deploys, and prints the URL in the run summary.
 3. **Get the apps:** the *Apps* workflow uploads `Pixie-macOS-arm64.zip`, `Pixie-android.apk` and `pixie-vscode.vsix` as run artifacts. Push a tag `v1.0.0` to attach them to a GitHub release.
 4. **First run:** open Pixie on the Mac, paste the orchestrator URL and your name. The first registration claims the instance; nobody else can register after that.

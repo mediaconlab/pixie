@@ -13,7 +13,7 @@ enum BrainAPIError: LocalizedError {
         case .badURL: return "That brain URL doesn't look right. It should start with https://"
         case .notSignedIn: return "Pixie isn't signed in yet."
         case .server(let status, let code, let message):
-            if code == "registration_closed" { return "This brain already has an owner. Ask them to pair this Mac instead." }
+            if code == "registration_closed" { return "This brain already has an owner, and only one Mac per brain is supported for now. Sign in on the Mac that set it up, or deploy your own brain." }
             return message ?? "Server error \(status): \(code)"
         case .decoding: return "Unexpected response from the brain."
         case .transport(let s): return s

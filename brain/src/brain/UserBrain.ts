@@ -86,7 +86,7 @@ export class UserBrain extends DurableObject<Env> {
   override async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const userId = req.headers.get("X-User-Id");
-    if (userId) this.setIdentity(userId, req.headers.get("X-User-Name"));
+    if (userId) this.setIdentity(userId, decodeHeader(req.headers.get("X-User-Name")));
 
     if (url.pathname === "/ws") {
       if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return json({ error: "expected_websocket" }, 426);
@@ -104,7 +104,7 @@ export class UserBrain extends DurableObject<Env> {
       const pair = new WebSocketPair();
       const [client, server] = [pair[0], pair[1]];
       this.ctx.acceptWebSocket(server, [deviceId, `kind:${kind}`]);
-      const att: Attachment = { deviceId, kind, name: req.headers.get("X-Device-Name") ?? kind, userId, lastTouch: Date.now() };
+      const att: Attachment = { deviceId, kind, name: decodeHeader(req.headers.get("X-Device-Name")) ?? kind, userId, lastTouch: Date.now() };
       server.serializeAttachment(att);
       return new Response(null, { status: 101, webSocket: client });
     }
@@ -190,4 +190,10 @@ export class UserBrain extends DurableObject<Env> {
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+/** Names travel URL-encoded in internal headers (header values can't hold characters like ’). */
+function decodeHeader(v: string | null): string | null {
+  if (v == null) return null;
+  try { return decodeURIComponent(v); } catch { return v; }
 }

@@ -319,7 +319,7 @@ describe("feedback / execute", () => {
     const ex = h.of("bot.execute");
     expect(ex).toHaveLength(1);
     expect(ex[0]!.device).toBe("and1");
-    expect(ex[0]!.data).toEqual({ proposal_id: id, kind: "whatsapp.reply", payload: { key: "nk", text: "Yes, coming at 8!" } });
+    expect(ex[0]!.data).toEqual({ proposal_id: id, kind: "whatsapp.reply", payload: { key: "nk", to: "Mom", text: "Yes, coming at 8!" } });
   });
 
   it("edited_text replaces the draft", async () => {

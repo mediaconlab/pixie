@@ -339,11 +339,14 @@ struct ProposalCard: View {
                         overlay.respond(to: p.proposal_id, verdict: "approve")
                     }
                     .buttonStyle(.borderedProminent)
-                    Button("Edit") {
-                        draft = p.draftText ?? stripQuotes(p.detail ?? "")
-                        editing = true
+                    // Only message drafts are editable; the brain ignores edits to other kinds.
+                    if p.kind == "whatsapp.reply" {
+                        Button("Edit") {
+                            draft = p.draftText ?? stripQuotes(p.detail ?? "")
+                            editing = true
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
                     Button("Not now") {
                         overlay.respond(to: p.proposal_id, verdict: "reject")
                     }

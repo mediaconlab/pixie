@@ -985,7 +985,11 @@ export class BrainCore {
       this.error(o, "bad_event", "unknown proposal_id");
       return;
     }
-    if (p.status !== "pending") return; // already handled (e.g. tapped on two devices)
+    if (p.status !== "pending") {
+      // already handled on another device: say so instead of silently ignoring the tap
+      this.error(o, "bad_event", `proposal already handled (${p.status})`);
+      return;
+    }
     const payload = JSON.parse(p.payload) as Record<string, unknown>;
     const draft = typeof payload.text === "string" ? payload.text : null;
 
@@ -1029,9 +1033,10 @@ export class BrainCore {
       this.perform(perf({ say: "Done!", emotion: "happy", intensity: 0.5, gesture: "nod" }, o.eventId), o);
     } else {
       const execPayload =
-        p.kind === "whatsapp.reply" ? { key: payload.key, text: payload.text } : p.kind === "call.back" ? { number: payload.number, name: payload.name ?? null } : payload;
+        p.kind === "whatsapp.reply" ? { key: payload.key, to: payload.to ?? null, text: payload.text } : p.kind === "call.back" ? { number: payload.number, name: payload.name ?? null } : payload;
       let targets = this.online(exec as DeviceKind);
-      if (p.target_device && targets.some((t) => t.id === p.target_device)) targets = targets.filter((t) => t.id === p.target_device);
+      // A proposal tied to one device (e.g. the editor that asked for a patch) only ever executes there.
+      if (p.target_device) targets = targets.filter((t) => t.id === p.target_device);
       const target = targets[0];
       if (!target) {
         this.sql.exec("UPDATE proposals SET status = 'undelivered', payload = ? WHERE id = ?", JSON.stringify(payload), p.id);

@@ -234,6 +234,12 @@ object PixieLink {
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             Log.i(TAG, "closed $code $reason")
+            if (code == 4001) {
+                // The brain revoked this device (removed from the Mac's device list): stop retrying.
+                EventLog.add("link", "Unpaired", "This phone was removed from Pixie. Pair again to reconnect.")
+                return
+            }
+            if (code == 4000) return // superseded by a newer connection from this same phone
             PixieLink.scheduleReconnect(gen)
         }
 
@@ -241,6 +247,7 @@ object PixieLink {
             Log.w(TAG, "failure: ${t.message} (http ${response?.code})")
             if (response?.code == 401 || response?.code == 403) {
                 EventLog.add("link", "Not authorised", "The brain rejected this phone's token. Try pairing again.")
+                return // retrying with a dead token can never succeed
             }
             PixieLink.scheduleReconnect(gen)
         }
