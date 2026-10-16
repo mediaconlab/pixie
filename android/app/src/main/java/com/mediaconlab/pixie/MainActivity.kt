@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Face
@@ -130,6 +131,9 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         resumeTick++
         paired = Prefs.isPaired(this)
+        // Picks up a permission granted in the dialog or in Settings, and (API 34+) lets a link service that was
+        // started at boot add the location type now that the app is visible.
+        if (paired) LinkService.locationSettingsChanged(this)
     }
 
     private fun unpair() {
@@ -175,7 +179,7 @@ private fun PixieApp(
             item { Header() }
             if (paired) {
                 item { StatusCard(onUnpair = onUnpair) }
-                item { ToggleCard() }
+                item { ToggleCard(resumeTick = resumeTick) }
             } else {
                 item { PairCard(pendingLink = pendingLink, onLinkConsumed = onLinkConsumed, onPaired = onPaired) }
             }
@@ -406,8 +410,10 @@ private fun ConnectionChip(state: LinkState) {
 }
 
 @Composable
-private fun ToggleCard() {
+private fun ToggleCard(resumeTick: Int) {
     val context = LocalContext.current
+    var shareLocation by remember { mutableStateOf(Prefs.shareLocation(context)) }
+    val locationPermitted = remember(resumeTick) { Permissions.locationGranted(context) }
     var whatsapp by remember { mutableStateOf(Prefs.forwardWhatsApp(context)) }
     var sms by remember { mutableStateOf(Prefs.forwardSms(context)) }
     var calls by remember { mutableStateOf(Prefs.forwardCalls(context)) }
@@ -427,6 +433,17 @@ private fun ToggleCard() {
             ToggleRow(Icons.Filled.Call, "Forward calls", "Ringing, answered, ended and missed calls", calls) {
                 calls = it
                 Prefs.setForwardCalls(context, it)
+            }
+            HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+            ToggleRow(
+                Icons.Filled.LocationOn,
+                "Share location for weather",
+                if (locationPermitted) "Rounded to about 1 km, at most every 15 minutes" else "Needs location access (see Setup)",
+                shareLocation,
+            ) {
+                shareLocation = it
+                Prefs.setShareLocation(context, it)
+                LinkService.locationSettingsChanged(context)
             }
         }
     }
@@ -487,6 +504,7 @@ private fun EventRow(e: LogEntry) {
     val icon = when (e.kind) {
         "call" -> Icons.Filled.Phone
         "message" -> Icons.Filled.Email
+        "location" -> Icons.Filled.LocationOn
         "exec" -> Icons.Filled.CheckCircle
         else -> Icons.Filled.Info
     }
@@ -528,11 +546,16 @@ private fun PermissionCards(resumeTick: Int) {
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         localTick++
     }
+    val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        localTick++
+        LinkService.locationSettingsChanged(context)
+    }
 
     val notifAccess = remember(tick) { Permissions.notificationAccess(context) }
     val phone = remember(tick) { Permissions.phoneGranted(context) }
     val post = remember(tick) { Permissions.postNotificationsGranted(context) }
     val battery = remember(tick) { Permissions.batteryUnrestricted(context) }
+    val location = remember(tick) { Permissions.locationGranted(context) }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         PermissionCard(
@@ -564,6 +587,18 @@ private fun PermissionCards(resumeTick: Int) {
                 onClick = { launcher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS)) },
             )
         }
+        PermissionCard(
+            icon = Icons.Filled.LocationOn,
+            title = "Location for weather",
+            body = "Lets Pixie know the local weather. Sent rounded to about 1 km, only while Pixie is linked; " +
+                "\"Approximate\" is enough.",
+            granted = location,
+            action = "Allow",
+            onClick = { locationLauncher.launch(Permissions.LOCATION) },
+            secondaryAction = "App info",
+            onSecondary = { openAppInfo(context) },
+            hint = "Denied twice? Android stops asking: App info → Permissions → Location → Allow only while using the app.",
+        )
         PermissionCard(
             icon = Icons.Filled.Settings,
             title = "Run in background",

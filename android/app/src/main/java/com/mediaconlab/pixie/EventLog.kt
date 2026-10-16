@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicLong
 data class LogEntry(
     val id: Long,
     val ts: Long,
-    /** "message", "call", "exec", "link" */
+    /** "message", "call", "exec", "link", "location" */
     val kind: String,
     val title: String,
     val detail: String,

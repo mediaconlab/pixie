@@ -21,6 +21,7 @@ object Prefs {
     private const val K_FWD_SMS = "forward_sms"
     private const val K_FWD_CALLS = "forward_calls"
     private const val K_LAST_URL = "last_url"
+    private const val K_SHARE_LOCATION = "share_location"
 
     private fun sp(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(NAME, Context.MODE_PRIVATE)
@@ -69,5 +70,12 @@ object Prefs {
 
     fun setForwardCalls(context: Context, value: Boolean) {
         sp(context).edit().putBoolean(K_FWD_CALLS, value).apply()
+    }
+
+    /** Defaults to on; nothing is sent until a location permission is also granted. */
+    fun shareLocation(context: Context): Boolean = sp(context).getBoolean(K_SHARE_LOCATION, true)
+
+    fun setShareLocation(context: Context, value: Boolean) {
+        sp(context).edit().putBoolean(K_SHARE_LOCATION, value).apply()
     }
 }

@@ -30,6 +30,10 @@ let package = Package(
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreImage"),
                 .linkedFramework("Security"),
+                .linkedFramework("CoreAudio"),
+                .linkedFramework("CoreMediaIO"),
+                .linkedFramework("EventKit"),
+                .linkedFramework("CoreLocation"),
             ]
         ),
         .testTarget(

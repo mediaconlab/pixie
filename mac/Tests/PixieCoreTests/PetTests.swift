@@ -412,3 +412,67 @@ final class PetEngineTests: XCTestCase {
         XCTAssertEqual(junk?.rng.state, 123)
     }
 }
+
+// MARK: - Signals (PROTOCOL.md §4.1)
+
+final class PixieSignalsTests: XCTestCase {
+    func testSignalsEncodeNullsExplicitly() throws {
+        let data = try JSONEncoder().encode(PixieSignalsData())
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        XCTAssertNotNil(obj)
+        XCTAssertTrue(obj?["music"] is NSNull)
+        XCTAssertTrue(obj?["next_busy_in_min"] is NSNull)
+        XCTAssertEqual(obj?["typing_rate"] as? String, "none")
+        XCTAssertEqual(obj?["app_switch_rate"] as? String, "low")
+        XCTAssertEqual(obj?["screen_locked"] as? Bool, false)
+
+        var s = PixieSignalsData()
+        s.music = PixieMusicSignal(app: "Spotify", playing: true)
+        s.next_busy_in_min = 42
+        s.typing_rate = .high
+        let back = try JSONDecoder().decode(PixieSignalsData.self, from: JSONEncoder().encode(s))
+        XCTAssertEqual(back, s)
+        let env = Envelope.make("signals.update", s)
+        XCTAssertEqual(env?.type, "signals.update")
+    }
+
+    func testRates() {
+        XCTAssertEqual(PixieSignalMath.typingRate(keysLastMinute: 0), PetTypingRate.none)
+        XCTAssertEqual(PixieSignalMath.typingRate(keysLastMinute: 20), .low)
+        XCTAssertEqual(PixieSignalMath.typingRate(keysLastMinute: 300), .high)
+        XCTAssertEqual(PixieSignalMath.appSwitchRate(switchesLast5Min: 2), .low)
+        XCTAssertEqual(PixieSignalMath.appSwitchRate(switchesLast5Min: 15), .high)
+        XCTAssertEqual(PixieSignalMath.prune([1, 50, 100], now: 100, window: 60), [50, 100])
+    }
+
+    func testLocationRoundingAndThrottle() {
+        let fix = PixieLocationData.rounded(lat: 28.45678, lon: 77.03123, accuracy: 65, source: "mac")
+        XCTAssertEqual(fix.lat, 28.46, accuracy: 1e-9)
+        XCTAssertEqual(fix.lon, 77.03, accuracy: 1e-9)
+        XCTAssertEqual(fix.accuracy_m, 1000)
+        XCTAssertEqual(fix.source, "mac")
+
+        XCTAssertTrue(PixieSignalMath.shouldSendLocation(lastLat: nil, lastLon: nil, lastSentAt: nil, lat: 1, lon: 1, now: 0))
+        // Moved ~11 km but too soon.
+        XCTAssertFalse(PixieSignalMath.shouldSendLocation(lastLat: 28.46, lastLon: 77.03, lastSentAt: 0, lat: 28.56, lon: 77.03, now: 60))
+        // Moved ~11 km after 15 min.
+        XCTAssertTrue(PixieSignalMath.shouldSendLocation(lastLat: 28.46, lastLon: 77.03, lastSentAt: 0, lat: 28.56, lon: 77.03, now: 901))
+        // Barely moved (~1 km).
+        XCTAssertFalse(PixieSignalMath.shouldSendLocation(lastLat: 28.46, lastLon: 77.03, lastSentAt: 0, lat: 28.47, lon: 77.03, now: 5000))
+    }
+
+    func testCalendarStatus() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let busy = [
+            PixieBusyInterval(start: now.addingTimeInterval(-600), end: now.addingTimeInterval(600)),
+            PixieBusyInterval(start: now.addingTimeInterval(3600), end: now.addingTimeInterval(7200)),
+            PixieBusyInterval(start: now.addingTimeInterval(1800), end: now.addingTimeInterval(1800)), // empty: ignored
+        ]
+        let s = PixieSignalMath.calendarStatus(busy, now: now)
+        XCTAssertTrue(s.busyNow)
+        XCTAssertEqual(s.nextBusyInMin, 60)
+        let free = PixieSignalMath.calendarStatus([], now: now)
+        XCTAssertFalse(free.busyNow)
+        XCTAssertNil(free.nextBusyInMin)
+    }
+}

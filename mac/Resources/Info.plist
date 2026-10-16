@@ -34,6 +34,14 @@
 	<string>Pixie listens through your microphone only while you hold the talk button, and transcribes on your Mac.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Pixie turns your voice (and, in Watch with me mode, what's playing) into text on your Mac.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>If you turn on "Use my calendar", Pixie checks only when you're busy or free so it doesn't interrupt you before meetings. It never reads titles, notes, places or attendees.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>If you turn on "Use my calendar", Pixie checks only when you're busy or free so it doesn't interrupt you before meetings. It never reads titles, notes, places or attendees.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Pixie uses this Mac's approximate location (about 1 km) to know your weather. Turn it off in Settings.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Pixie uses this Mac's approximate location (about 1 km) to know your weather. Turn it off in Settings.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Pixie peeks at your screen only when you turn on screen sharing or Watch with me, and never captures blocked apps.</string>
 </dict>

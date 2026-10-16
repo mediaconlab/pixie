@@ -17,8 +17,10 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
 /**
- * Foreground service that owns the [PixieLink] socket. Type `specialUse` (persistent link to the user's own
- * companion brain) on API 34+; on API 29-33 the platform uses the manifest's foregroundServiceType.
+ * Foreground service that owns the [PixieLink] socket and the [LocationReporter]. Type `specialUse` (persistent
+ * link to the user's own companion brain), plus `location` while location sharing is on and permitted: without
+ * the location type Android 10+ stops delivering fixes to an app whose activity is not visible, and Pixie never
+ * asks for ACCESS_BACKGROUND_LOCATION. On API 29-33 the platform uses the manifest's foregroundServiceType.
  */
 class LinkService : Service() {
 
@@ -27,6 +29,7 @@ class LinkService : Service() {
         const val CHANNEL_LINK = "pixie_link"
         private const val NOTIF_ID = 1001
         private const val ACTION_STOP = "com.mediaconlab.pixie.STOP_LINK"
+        private const val ACTION_LOCATION = "com.mediaconlab.pixie.LOCATION_CHANGED"
 
         /** True between onCreate and onDestroy. */
         @Volatile
@@ -52,6 +55,20 @@ class LinkService : Service() {
         fun stop(context: Context) {
             context.stopService(Intent(context, LinkService::class.java))
         }
+
+        /**
+         * The location toggle or permission changed. Call from the visible activity: re-running startForeground
+         * there is what lets the service add (or drop) the `location` type on API 34+.
+         */
+        fun locationSettingsChanged(context: Context) {
+            if (!Prefs.isPaired(context) || !isRunning) return
+            val intent = Intent(context, LinkService::class.java).setAction(ACTION_LOCATION)
+            try {
+                ContextCompat.startForegroundService(context, intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "could not refresh location: ${e.message}")
+            }
+        }
     }
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -73,12 +90,14 @@ class LinkService : Service() {
         }
         goForeground()
         PixieLink.start(this)
+        LocationReporter.sync(this)
         return START_STICKY
     }
 
     override fun onDestroy() {
         isRunning = false
         unregisterNetworkCallback()
+        LocationReporter.stop()
         PixieLink.stop()
         super.onDestroy()
     }
@@ -87,7 +106,18 @@ class LinkService : Service() {
         val notification = buildNotification()
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                val special = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                if (LocationReporter.shouldRun(this)) {
+                    try {
+                        startForeground(NOTIF_ID, notification, special or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+                        return
+                    } catch (e: SecurityException) {
+                        // Started from the background (boot, a call): Android 14+ refuses the location type
+                        // then. Run without it; the next start from the open app adds it back.
+                        Log.w(TAG, "location FGS type refused: ${e.message}")
+                    }
+                }
+                startForeground(NOTIF_ID, notification, special)
             } else {
                 // API 29-33: the special-use type does not exist yet; the 2-arg overload uses the
                 // manifest-declared type (FOREGROUND_SERVICE_TYPE_MANIFEST), which is all we need.

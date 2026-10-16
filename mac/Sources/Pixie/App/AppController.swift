@@ -16,6 +16,7 @@ final class AppController: NSObject, NSWindowDelegate {
     let screen: ScreenSense
     let audio: AudioSense
     let pet: PetBodyController
+    let signals: PixieSignalsMonitor
 
     private var panel: PanelController?
     private var hotKey: HotKey?
@@ -46,6 +47,7 @@ final class AppController: NSObject, NSWindowDelegate {
         screen = ScreenSense(prefs: p)
         audio = AudioSense(prefs: p)
         pet = PetBodyController(avatar: av)
+        signals = PixieSignalsMonitor(prefs: p)
         super.init()
     }
 
@@ -62,7 +64,9 @@ final class AppController: NSObject, NSWindowDelegate {
         wirePet()
 
         hotKey = HotKey { [weak self] in self?.hotKeyPressed() }
+        hotKey?.onAnyKeyDown = { [weak self] in self?.signals.keyDown() }
         hotKey?.start()
+        wireSignals()
 
         activity.isWatching = { [weak self] in self?.watching ?? false }
         activity.start()
@@ -84,6 +88,7 @@ final class AppController: NSObject, NSWindowDelegate {
     }
 
     func shutdown() {
+        signals.stop()
         pet.stop()
         link.disconnect()
         audio.stop()
@@ -166,6 +171,8 @@ final class AppController: NSObject, NSWindowDelegate {
             if open {
                 self.activity.resend()
                 self.pet.connected()
+                self.signals.connected()
+                self.refreshPairedDevices()
             }
         }
         link.onUnauthorized = { [weak self] in
@@ -214,12 +221,43 @@ final class AppController: NSObject, NSWindowDelegate {
         pet.start()
     }
 
+    /// Context signals and the Mac location fallback (PROTOCOL.md §4.1). Also fed into the local pet engine.
+    private func wireSignals() {
+        signals.isOnline = { [weak self] in self?.link.isOpen ?? false }
+        signals.screenLocked = { [weak self] in self?.pet.isScreenLocked ?? false }
+        signals.ownMicActive = { [weak self] in self?.overlay.recording ?? false }
+        signals.send = { [weak self] data in self?.link.send("signals.update", data) }
+        signals.onNotice = { [weak self] text in self?.localSay(text, emotion: .shy) }
+        signals.location.isOnline = { [weak self] in self?.link.isOpen ?? false }
+        signals.location.send = { [weak self] fix in self?.link.send("location.update", fix) }
+        pet.signals = { [weak self] in self?.signals.current }
+        pet.onAppSwitch = { [weak self] in self?.signals.appSwitched() }
+        pet.onScreenLockChanged = { [weak self] in self?.signals.screenLockChanged() }
+        signals.start()
+    }
+
+    /// Whether an Android phone is paired decides the default of "Use this Mac's location for weather".
+    private func refreshPairedDevices() {
+        guard let api = currentAPI() else { return }
+        Task { @MainActor in
+            guard let devices = try? await api.devices() else { return }
+            let android = devices.contains { $0.kind == "android" }
+            if !self.prefs.androidPairedKnown || self.prefs.androidPaired != android {
+                self.prefs.androidPaired = android
+            }
+        }
+    }
+
     // MARK: Incoming events
 
     private func handle(_ event: IncomingEvent) {
         switch event {
         case .welcome(let w):
             userName = w.user_name ?? prefs.userName
+            if let devices = w.devices {
+                let android = devices.contains { $0.kind == "android" }
+                if !prefs.androidPairedKnown || prefs.androidPaired != android { prefs.androidPaired = android }
+            }
             avatar.setEmotion(.happy, intensity: 0.5, hold: 2)
         case .perform(let p):
             if pet.performanceArrived(p) {

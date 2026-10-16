@@ -15,10 +15,19 @@ object Permissions {
         Manifest.permission.READ_CONTACTS,
     )
 
+    /** Foreground-only: Pixie never requests ACCESS_BACKGROUND_LOCATION. */
+    val LOCATION = arrayOf(
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION,
+    )
+
     fun granted(context: Context, permission: String): Boolean =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
     fun phoneGranted(context: Context): Boolean = PHONE.all { granted(context, it) }
+
+    /** Either is enough: coarse (approximate) is all weather needs, and the user may pick it in the dialog. */
+    fun locationGranted(context: Context): Boolean = LOCATION.any { granted(context, it) }
 
     fun postNotificationsGranted(context: Context): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

@@ -75,6 +75,17 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Signals") {
+                Toggle("Use my calendar to avoid interrupting before meetings", isOn: $prefs.useCalendar)
+                Text("Pixie reads only when you're busy or free, never titles, notes, places or people.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Use this Mac's location for weather", isOn: $prefs.macLocationEnabled)
+                Text(prefs.androidPaired
+                     ? "Your phone already shares an approximate location, so this is off unless you turn it on."
+                     : "Approximate (about 1 km), sent only when you move. Used for weather.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("Never look at these apps") {
                 List(selection: $selection) {
                     ForEach(prefs.blocklist, id: \.self) { id in
@@ -142,7 +153,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 680)
+        .frame(width: 520, height: 760)
         .onAppear {
             urlDraft = prefs.brainURL
             replyRules.refresh()

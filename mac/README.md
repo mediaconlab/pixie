@@ -35,6 +35,7 @@ bash mac/scripts/package.sh                               # → mac/dist/Pixie.a
 | `Sources/Pixie/Senses` | ScreenCaptureKit stills, OCR and redaction, system-audio transcription |
 | `Sources/Pixie/Voice` | Text to speech and push-to-talk |
 | `Sources/Pixie/Activity` | `state.update` detection |
+| `Sources/Pixie/Signals` | `PixieSignalsMonitor` (`signals.update`) and the Mac location fallback (`location.update`) |
 | `Sources/Pixie/Settings` | Settings window |
 
 ## Pixie's body
@@ -85,6 +86,27 @@ The engine state is saved in UserDefaults (`petBody.v1`).
 
 Petting, poking, feeding and carrying are reported as `pet.event`.
 
+## Signals Pixie uses
+
+So it knows when not to interrupt, the Mac sends the brain a small `signals.update` (PROTOCOL.md §4.1) when
+something changes, at most once every ~2 seconds. The same values go into the local pet engine. None of them
+include content:
+
+| Signal | How | What is sent |
+| --- | --- | --- |
+| Microphone in use | CoreAudio: is the default input device running in any app (polled every 5 s) | `true` / `false`. No audio is read. Pixie's own push-to-talk does not count. |
+| Camera in use | CoreMediaIO: is any camera running in any app (every 5 s) | `true` / `false`. No video is read. |
+| Music | Spotify and Apple Music playback notifications | `{ app, playing }` only, never track, artist or album. Pixie bobs along. |
+| Calendar | EventKit, every 5 minutes, **only if you turn on** "Use my calendar to avoid interrupting before meetings" | Busy now, and minutes until the next busy event. All-day, cancelled, free and declined events are skipped. Titles, notes, places and attendees are never read or stored. |
+| Typing rate | Count of key presses in the last minute (`none` / `low` / `high`) | Only the rate, never keys. Needs Accessibility, otherwise always `none`. |
+| App switching | Frontmost-app changes in the last 5 minutes (`low` / `high`) | Only the rate, never app names. |
+| Screen locked | System lock and unlock notifications | `true` / `false` |
+
+**Location (fallback for weather).** With "Use this Mac's location for weather" on, the Mac asks Location Services
+for an approximate position (about 1 km), rounds it to 2 decimals and sends `location.update` with `source: "mac"`
+on start and when you move more than 2 km, at most every 15 minutes. It is on by default only while no Android phone
+is paired (your phone sends location instead); you can switch it either way in Settings.
+
 ## First run
 
 1. Open Pixie. A welcome window asks for your **brain URL** (for example `https://pixie-orchestrator.you.workers.dev`)
@@ -102,7 +124,9 @@ macOS asks for each permission the first time you use the feature that needs it:
 | **Screen Recording** | "Let Pixie see my screen", "Watch with me", and window titles for activity detection | System Settings → Privacy & Security → Screen & System Audio Recording |
 | **Microphone** | Push-to-talk | System Settings → Privacy & Security → Microphone |
 | **Speech Recognition** | Push-to-talk and watch-mode transcripts (both on-device) | System Settings → Privacy & Security → Speech Recognition |
-| **Accessibility** | The ⌥Space hotkey while another app is frontmost (global key monitor) | System Settings → Privacy & Security → Accessibility. Settings → "Grant Accessibility…" |
+| **Accessibility** | The ⌥Space hotkey while another app is frontmost (global key monitor), and the typing-rate signal | System Settings → Privacy & Security → Accessibility. Settings → "Grant Accessibility…" |
+| **Calendars** | Only if you turn on "Use my calendar…" (busy/free times only) | System Settings → Privacy & Security → Calendars |
+| **Location Services** | "Use this Mac's location for weather" | System Settings → Privacy & Security → Location Services |
 
 After you grant Screen Recording, macOS often needs Pixie to restart: quit it from the menu and open it again.
 On macOS 15 and later the system also shows a reminder about screen recording from time to time. That is expected.

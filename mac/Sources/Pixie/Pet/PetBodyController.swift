@@ -15,6 +15,15 @@ final class PetBodyController {
     var currentActivity: () -> Activity = { .idle }
     /// Whether the link is open (pet.state is only sent live; it is re-sent after reconnecting).
     var isOnline: () -> Bool = { false }
+    /// The latest context signals (mic, camera, music, calendar), or nil when not available.
+    var signals: () -> PixieSignalsData? = { nil }
+    /// The frontmost app changed (the observer here is shared with the signals monitor).
+    var onAppSwitch: (() -> Void)?
+    /// The screen was locked or unlocked (the observers here are shared with the signals monitor).
+    var onScreenLockChanged: (() -> Void)?
+
+    /// Whether the screen is locked right now.
+    var isScreenLocked: Bool { screenLocked }
 
     private let avatar: AvatarModel
     private let clock: () -> Date
@@ -55,15 +64,24 @@ final class PetBodyController {
         }
         let ws: NotificationCenter = NSWorkspace.shared.notificationCenter
         let o1 = ws.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.lastAppSwitch = Date() }
+            MainActor.assumeIsolated {
+                self?.lastAppSwitch = Date()
+                self?.onAppSwitch?()
+            }
         }
         observers.append((ws, o1))
         let dn: NotificationCenter = DistributedNotificationCenter.default()
         let o2 = dn.addObserver(forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.screenLocked = true }
+            MainActor.assumeIsolated {
+                self?.screenLocked = true
+                self?.onScreenLockChanged?()
+            }
         }
         let o3 = dn.addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.screenLocked = false }
+            MainActor.assumeIsolated {
+                self?.screenLocked = false
+                self?.onScreenLockChanged?()
+            }
         }
         observers.append((dn, o2))
         observers.append((dn, o3))
@@ -97,7 +115,24 @@ final class PetBodyController {
         }
         c.secondsSinceAppSwitch = max(0, Date().timeIntervalSince(lastAppSwitch))
         c.screenLocked = screenLocked
+        applySignals(to: &c)
         return c
+    }
+
+    /// Mic, camera, calendar and music from `PixieSignalsMonitor`. Typing stays on the finer 1 Hz measure above.
+    private func applySignals(to c: inout PetContext) {
+        guard let s = signals() else { return }
+        c.micInUse = s.mic_in_use
+        c.cameraInUse = s.camera_in_use
+        // Busy now, or a meeting starts within 5 minutes: don't start anything that interrupts.
+        var soon = false
+        if let n = s.next_busy_in_min, n <= 5 { soon = true }
+        c.calendarBusy = s.calendar_busy_now || soon
+        if let m = s.music {
+            c.musicPlaying = m.playing
+        } else {
+            c.musicPlaying = nil
+        }
     }
 
     // MARK: Tick
@@ -173,6 +208,7 @@ final class PetBodyController {
         c.activity = currentActivity()
         c.idleSeconds = AvatarModel.systemIdleSeconds()
         c.screenLocked = screenLocked
+        applySignals(to: &c)
         return c
     }
 

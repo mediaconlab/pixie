@@ -13,6 +13,8 @@ final class HotKey {
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private let action: () -> Void
+    /// Every key press seen by either monitor (no key codes or characters are passed on), for typing rate.
+    var onAnyKeyDown: (() -> Void)?
 
     init(action: @escaping () -> Void) {
         self.action = action
@@ -21,10 +23,14 @@ final class HotKey {
     func start() {
         stop()
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard HotKey.matches(event) else { return }
-            Task { @MainActor in self?.action() }
+            let hot = HotKey.matches(event)
+            Task { @MainActor in
+                self?.onAnyKeyDown?()
+                if hot { self?.action() }
+            }
         }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            MainActor.assumeIsolated { self?.onAnyKeyDown?() }
             guard HotKey.matches(event) else { return event }
             MainActor.assumeIsolated { self?.action() }
             return nil

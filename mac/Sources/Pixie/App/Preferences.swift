@@ -19,6 +19,11 @@ enum CharacterSize: String, CaseIterable, Identifiable {
     }
 }
 
+/// "Use this Mac's location for weather": `auto` = on only while no Android phone is paired.
+enum PixieLocationChoice: String {
+    case auto, on, off
+}
+
 /// UserDefaults-backed settings. Secrets (the device token) live in the Keychain, not here.
 @MainActor
 final class Preferences: ObservableObject {
@@ -37,6 +42,9 @@ final class Preferences: ObservableObject {
         static let panelX = "panelX"
         static let panelY = "panelY"
         static let deviceID = "deviceID"
+        static let useCalendar = "useCalendar"
+        static let macLocationChoice = "macLocationChoice"
+        static let androidPaired = "androidPaired"
     }
 
     @Published var brainURL: String { didSet { defaults.set(brainURL, forKey: Key.brainURL) } }
@@ -49,6 +57,12 @@ final class Preferences: ObservableObject {
     /// Off by default. Remembered once the user opts in.
     @Published var screenSharing: Bool { didSet { defaults.set(screenSharing, forKey: Key.screenSharing) } }
     @Published var deviceID: String { didSet { defaults.set(deviceID, forKey: Key.deviceID) } }
+    /// "Use my calendar to avoid interrupting before meetings". Off by default; busy/free times only.
+    @Published var useCalendar: Bool { didSet { defaults.set(useCalendar, forKey: Key.useCalendar) } }
+    /// A `PixieLocationChoice` raw value. Defaults to `auto`.
+    @Published var macLocationChoice: String { didSet { defaults.set(macLocationChoice, forKey: Key.macLocationChoice) } }
+    /// Whether an Android phone is paired (from `GET /v1/devices`, cached so the default works offline).
+    @Published var androidPaired: Bool { didSet { defaults.set(androidPaired, forKey: Key.androidPaired) } }
 
     init() {
         let defaults = UserDefaults.standard
@@ -61,6 +75,27 @@ final class Preferences: ObservableObject {
         blocklist = defaults.stringArray(forKey: Key.blocklist) ?? CaptureGuard.defaultBlockedBundleIDs
         screenSharing = defaults.bool(forKey: Key.screenSharing)
         deviceID = defaults.string(forKey: Key.deviceID) ?? ""
+        useCalendar = defaults.bool(forKey: Key.useCalendar)
+        macLocationChoice = defaults.string(forKey: Key.macLocationChoice) ?? PixieLocationChoice.auto.rawValue
+        androidPaired = defaults.bool(forKey: Key.androidPaired)
+    }
+
+    /// The Settings toggle: shows the effective value; flipping it stores an explicit choice.
+    var macLocationEnabled: Bool {
+        get { useMacLocation }
+        set { macLocationChoice = newValue ? PixieLocationChoice.on.rawValue : PixieLocationChoice.off.rawValue }
+    }
+
+    /// Whether `androidPaired` has ever been learned from the device list.
+    var androidPairedKnown: Bool { defaults.object(forKey: Key.androidPaired) != nil }
+
+    /// Whether the Mac reports its own location: on by default only while no Android phone is paired.
+    var useMacLocation: Bool {
+        switch PixieLocationChoice(rawValue: macLocationChoice) ?? .auto {
+        case .on: return true
+        case .off: return false
+        case .auto: return androidPairedKnown && !androidPaired
+        }
     }
 
     var panelOrigin: CGPoint? {
