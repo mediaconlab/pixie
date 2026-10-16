@@ -4,6 +4,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var prefs: Preferences
+    @ObservedObject var replyRules: ReplyRulesModel
     let onBrainURLCommitted: () -> Void
     let onIntervalChanged: () -> Void
     let onForgetMe: @MainActor () async -> String?
@@ -15,13 +16,16 @@ struct SettingsView: View {
     @State private var confirmForget = false
     @State private var confirmSignOut = false
     @State private var status: String?
+    @State private var confirmResetLearning = false
 
     init(prefs: Preferences,
+         replyRules: ReplyRulesModel,
          onBrainURLCommitted: @escaping () -> Void,
          onIntervalChanged: @escaping () -> Void,
          onForgetMe: @escaping @MainActor () async -> String?,
          onSignOut: @escaping () -> Void) {
         _prefs = ObservedObject(wrappedValue: prefs)
+        _replyRules = ObservedObject(wrappedValue: replyRules)
         self.onBrainURLCommitted = onBrainURLCommitted
         self.onIntervalChanged = onIntervalChanged
         self.onForgetMe = onForgetMe
@@ -106,6 +110,26 @@ struct SettingsView: View {
                 .buttonStyle(.link)
             }
 
+            Section("Reply suggestions") {
+                replyRulesList
+                HStack {
+                    Button("Refresh") { replyRules.refresh() }
+                        .disabled(replyRules.loading)
+                    Button("Reset reply learning…") { confirmResetLearning = true }
+                    Spacer()
+                    if replyRules.loading {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                if let err = replyRules.error {
+                    Text(err).font(.caption).foregroundStyle(Color.red)
+                } else if let note = replyRules.status {
+                    Text(note).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Tell Pixie in chat, e.g. “always show me reply options for Mom”, to add a rule.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("Privacy") {
                 HStack {
                     Button("Forget me…", role: .destructive) { confirmForget = true }
@@ -118,23 +142,70 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 600)
-        .onAppear { urlDraft = prefs.brainURL }
+        .frame(width: 520, height: 680)
+        .onAppear {
+            urlDraft = prefs.brainURL
+            replyRules.refresh()
+        }
         .alert("Forget everything?", isPresented: $confirmForget) {
             Button("Forget me", role: .destructive) {
                 Task { @MainActor in
                     status = await onForgetMe() ?? "Pixie forgot everything."
+                    replyRules.refresh()
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Pixie's brain will wipe all memories, preferences, decisions and mood. This can't be undone.")
         }
+        .alert("Reset reply learning?", isPresented: $confirmResetLearning) {
+            Button("Reset", role: .destructive) { replyRules.resetLearning() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Pixie will forget what it learned about which messages you want reply ideas for. Your rules stay.")
+        }
         .alert("Sign out?", isPresented: $confirmSignOut) {
             Button("Sign out", role: .destructive) { onSignOut() }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This Mac's token will be removed from the Keychain.")
+        }
+    }
+
+    @ViewBuilder
+    private var replyRulesList: some View {
+        if replyRules.rules.isEmpty {
+            Text(replyRules.loaded ? "No reply rules yet." : "Loading rules…")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(replyRules.rules) { rule in
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(rule.displayLabel)
+                        if let until = rule.expiresDate {
+                            Text("Until \(until.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let utterance = rule.utterance, !utterance.isEmpty {
+                            Text("“\(utterance)”")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                    }
+                    Spacer()
+                    Button(role: .destructive) {
+                        replyRules.delete(rule)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Delete this rule")
+                }
+            }
         }
     }
 

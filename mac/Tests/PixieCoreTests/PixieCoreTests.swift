@@ -131,3 +131,77 @@ final class CoreTests: XCTestCase {
         XCTAssertFalse(CaptureGuard.isPrivateTitle("Inbox"))
     }
 }
+
+final class SmartReplyTests: XCTestCase {
+    func testProposeDecodesSmartReplyFields() {
+        let json = #"{"v":1,"id":"x","ts":1,"type":"bot.propose","data":{"proposal_id":"prp_1","kind":"whatsapp.reply","title":"Reply to Priya?","detail":"\"On my way\"","payload":{"text":"On my way"},"executor":"android","expires_at":1760607720000,"why":"You used 7 of your last 8 suggestions for Priya","exploration":true,"quick_actions":[{"id":"never_contact","label":"Not for Priya"},{"id":"never_group","label":"Not in Family"},{"id":"future_thing","label":"Later"},{"label":"no id"},5]}}"#
+        let env = Envelope.parse(json)!
+        guard case .propose(let p) = IncomingEvent(env) else { return XCTFail("not propose") }
+        XCTAssertEqual(p.proposal_id, "prp_1")
+        XCTAssertEqual(p.draftText, "On my way")
+        XCTAssertEqual(p.whyText, "You used 7 of your last 8 suggestions for Priya")
+        XCTAssertTrue(p.isExploration)
+        XCTAssertEqual(p.quick_actions?.count, 3)
+        XCTAssertEqual(p.knownQuickActions.map { $0.id }, ["never_contact", "never_group"])
+        XCTAssertEqual(p.knownQuickActions.map { $0.scope }, ["contact", "group"])
+        XCTAssertTrue(p.isGroupCard)
+    }
+
+    func testProposeToleratesMissingAndWrongTypes() {
+        let json = #"{"v":1,"id":"x","ts":1,"type":"bot.propose","data":{"proposal_id":"prp_2","kind":"whatsapp.reply","why":42,"exploration":"yes","quick_actions":"nope"}}"#
+        let env = Envelope.parse(json)!
+        guard case .propose(let p) = IncomingEvent(env) else { return XCTFail("not propose") }
+        XCTAssertNil(p.why)
+        XCTAssertNil(p.whyText)
+        XCTAssertFalse(p.isExploration)
+        XCTAssertNil(p.quick_actions)
+        XCTAssertTrue(p.knownQuickActions.isEmpty)
+        XCTAssertFalse(p.isGroupCard)
+
+        let bare = Envelope.parse(#"{"v":1,"id":"x","ts":1,"type":"bot.propose","data":{"proposal_id":"prp_3"}}"#)!
+        guard case .propose(let b) = IncomingEvent(bare) else { return XCTFail("not propose") }
+        XCTAssertNil(b.kind)
+        XCTAssertNil(b.exploration)
+    }
+
+    func testProposeRoundTrip() {
+        let p = ProposeData(proposal_id: "prp_4", kind: "whatsapp.reply", why: "because", exploration: false,
+                            quick_actions: [ProposalQuickAction(id: "never_contact", label: "Not for Mom")])
+        let env = Envelope.make("bot.propose", p)!
+        XCTAssertEqual(env.data["why"]?.stringValue, "because")
+        XCTAssertEqual(env.data["exploration"]?.boolValue, false)
+        XCTAssertNil(env.data["title"])
+        XCTAssertEqual(env.decodeData(ProposeData.self), p)
+    }
+
+    func testFeedbackScopeEncoding() {
+        let env = Envelope.make("user.feedback", UserFeedbackData(proposal_id: "prp_1", verdict: "never", scope: FeedbackScope.group))!
+        XCTAssertEqual(env.data["scope"]?.stringValue, "group")
+        XCTAssertEqual(env.data["verdict"]?.stringValue, "never")
+        XCTAssertNil(env.data["edited_text"])
+
+        let plain = Envelope.make("user.feedback", UserFeedbackData(proposal_id: "prp_1", verdict: "never"))!
+        XCTAssertNil(plain.data["scope"])
+
+        let decoded = plain.decodeData(UserFeedbackData.self)
+        XCTAssertEqual(decoded?.verdict, "never")
+        XCTAssertNil(decoded?.scope)
+    }
+
+    func testReplyRulesDecoding() throws {
+        let json = #"{"rules":[{"id":"rr_1","effect":"always","subject_type":"contact","subject_label":"Mom","conditions":null,"expires_at":null,"source":"chat","utterance":"always show me reply options for Mom","created_at":1760607720000},{"id":"rr_2","effect":"never","subject_type":"group","subject_label":"Office","conditions":{"mention_only":true},"expires_at":1760700000000,"source":"button","utterance":null,"created_at":1760607720001},{"effect":"never"},{"id":"rr_3","effect":"only","subject_type":"all_groups","subject_label":null}]}"#
+        let r = try JSONDecoder().decode(ReplyRulesResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(r.rules.map { $0.id }, ["rr_1", "rr_2", "rr_3"])
+        XCTAssertEqual(r.rules[0].displayLabel, "Always · Mom")
+        XCTAssertNil(r.rules[0].conditions)
+        XCTAssertNil(r.rules[0].expiresDate)
+        XCTAssertEqual(r.rules[1].displayLabel, "Never · Office group")
+        XCTAssertEqual(r.rules[1].conditions?["mention_only"]?.boolValue, true)
+        XCTAssertEqual(r.rules[1].expiresDate, Date(timeIntervalSince1970: 1_760_700_000))
+        XCTAssertEqual(r.rules[2].displayLabel, "Only · All groups")
+
+        let empty = try JSONDecoder().decode(ReplyRulesResponse.self, from: Data("{}".utf8))
+        XCTAssertTrue(empty.rules.isEmpty)
+    }
+}
+

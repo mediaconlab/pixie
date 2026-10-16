@@ -13,7 +13,8 @@ import org.json.JSONObject
 
 /**
  * Reads WhatsApp / SMS notification previews (never chat databases) and forwards them as `phone.message`.
- * Also keeps the latest notification per key so an approved reply can use its inline-reply action.
+ * When the newest message in a conversation notification is the user's own, it sends `phone.self_reply`
+ * instead (conversation name only, never the text). Also keeps the latest notification per key so an approved reply can use its inline-reply action.
  */
 class PixieNotificationListener : NotificationListenerService() {
 
@@ -57,6 +58,12 @@ class PixieNotificationListener : NotificationListenerService() {
     /** LRU of hash(key + text) to drop the repeated posts WhatsApp makes for the same message. */
     private val seen = object : LinkedHashMap<Int, Boolean>(DEDUPE_CAP, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Boolean>?): Boolean =
+            size > DEDUPE_CAP
+    }
+
+    /** LRU of "key + message timestamp" so a re-posted notification doesn't repeat `phone.self_reply`. */
+    private val seenSelf = object : LinkedHashMap<String, Boolean>(DEDUPE_CAP, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean =
             size > DEDUPE_CAP
     }
 
@@ -104,6 +111,11 @@ class PixieNotificationListener : NotificationListenerService() {
         if (n.category == Notification.CATEGORY_CALL) return
 
         val parsed = parse(n) ?: return
+        if (parsed.isSelf) {
+            if (app != "sms" && isSystemNotice("", parsed.conversation ?: "")) return
+            handleSelfReply(sbn, parsed)
+            return
+        }
         if (parsed.preview.isBlank()) return
         if (app != "sms" && isSystemNotice(parsed.preview, parsed.conversation ?: parsed.from)) return
 
@@ -132,11 +144,40 @@ class PixieNotificationListener : NotificationListenerService() {
         EventLog.add("message", label, parsed.preview.take(120))
     }
 
+    /**
+     * The user's own message is the newest one in this conversation notification. Never forwarded as
+     * `phone.message`; sent as `phone.self_reply` with no text, once per key + message timestamp.
+     */
+    private fun handleSelfReply(sbn: StatusBarNotification, parsed: Parsed) {
+        val conversation = parsed.conversation ?: return
+        val dedupeKey = sbn.key + "\u0000" + parsed.timestamp
+        synchronized(seenSelf) {
+            if (seenSelf.containsKey(dedupeKey)) return
+            seenSelf[dedupeKey] = true
+        }
+
+        // Keep the freshest copy so a later approved reply uses the current reply action.
+        NotificationStore.put(sbn)
+
+        val data = JSONObject()
+            .put("key", sbn.key)
+            .put("conversation", conversation)
+            .put("is_group", parsed.isGroup)
+
+        LinkService.start(this)
+        PixieLink.send("phone.self_reply", data)
+        EventLog.add("message", "You replied in $conversation", "")
+    }
+
     private data class Parsed(
         val from: String,
         val conversation: String?,
         val preview: String,
         val isGroup: Boolean,
+        /** True when the newest message was written by the phone's user. [preview] is empty then. */
+        val isSelf: Boolean = false,
+        /** Newest message's timestamp (MessagingStyle only, 0 otherwise). */
+        val timestamp: Long = 0L,
     )
 
     private fun parse(n: Notification): Parsed? {
@@ -149,19 +190,24 @@ class PixieNotificationListener : NotificationListenerService() {
             val messages = style.messages
             if (messages.isNotEmpty()) {
                 val last = messages[messages.size - 1]
-                // A null person means the message was written by the phone's user (e.g. WhatsApp re-posting
-                // the notification with our own approved reply appended). Never forward those.
+                val isGroup = style.isGroupConversation
+                val title = style.conversationTitle?.toString()?.takeIf { it.isNotBlank() }
+                // A null person, or one matching style.user, means the message was written by the phone's user
+                // (e.g. WhatsApp re-posting the notification with the user's reply appended). Never forwarded as
+                // phone.message; reported as a text-free self reply instead.
+                if (isOwnMessage(style, last)) {
+                    val conversation = title
+                        ?: lastOtherSenderName(style)
+                        ?: n.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim()
+                            ?.takeIf { it.isNotEmpty() }
+                        ?: return null
+                    return Parsed("", conversation, "", isGroup, true, last.timestamp)
+                }
                 val sender = last.person ?: return null
                 val text = last.text?.toString()?.trim() ?: ""
                 val senderName = sender.name?.toString()?.takeIf { it.isNotBlank() } ?: "Unknown"
-                val userName = style.user.name?.toString()
-                val userKey = style.user.key
-                if (userKey != null && userKey == sender.key) return null
-                if (userName != null && userName == senderName) return null
-                val isGroup = style.isGroupConversation
-                val title = style.conversationTitle?.toString()?.takeIf { it.isNotBlank() }
                 val conversation = if (isGroup) title else null
-                return Parsed(senderName, conversation, text, isGroup)
+                return Parsed(senderName, conversation, text, isGroup, false, last.timestamp)
             }
         }
 
@@ -180,6 +226,30 @@ class PixieNotificationListener : NotificationListenerService() {
         } else {
             Parsed(title.replace(Regex("\\s*\\(\\d+ \\w+\\)$"), "").trim(), null, text, false)
         }
+    }
+
+    private fun isOwnMessage(
+        style: NotificationCompat.MessagingStyle,
+        message: NotificationCompat.MessagingStyle.Message,
+    ): Boolean {
+        val sender = message.person ?: return true
+        val userKey = style.user.key
+        if (userKey != null && userKey == sender.key) return true
+        val senderName = sender.name?.toString()?.takeIf { it.isNotBlank() } ?: return false
+        val userName = style.user.name?.toString()
+        return userName != null && userName == senderName
+    }
+
+    /** In a 1:1 chat with no conversation title, the other person's name names the conversation. */
+    private fun lastOtherSenderName(style: NotificationCompat.MessagingStyle): String? {
+        val messages = style.messages
+        for (i in messages.indices.reversed()) {
+            val m = messages[i]
+            if (isOwnMessage(style, m)) continue
+            val name = m.person?.name?.toString()?.trim()
+            if (!name.isNullOrEmpty()) return name
+        }
+        return null
     }
 
     private fun isSystemNotice(text: String, title: String): Boolean {

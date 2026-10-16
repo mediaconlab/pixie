@@ -38,7 +38,8 @@ final class OverlayModel: ObservableObject {
 
     // Wiring (set by AppController)
     var onSend: ((String, String) -> Void)?
-    var onFeedback: ((String, String, String?) -> Void)?
+    /// (proposal_id, verdict, edited_text, scope)
+    var onFeedback: ((String, String, String?, String?) -> Void)?
     var onMicDown: (() -> Void)?
     var onMicUp: (() -> Void)?
     /// Called with true while the typewriter runs and nobody is speaking aloud (drives the mouth).
@@ -190,8 +191,8 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    func respond(to proposalID: String, verdict: String, editedText: String? = nil) {
-        onFeedback?(proposalID, verdict, editedText)
+    func respond(to proposalID: String, verdict: String, editedText: String? = nil, scope: String? = nil) {
+        onFeedback?(proposalID, verdict, editedText, scope)
         removeProposal(proposalID)
     }
 

@@ -325,6 +325,8 @@ struct ProposalCard: View {
 
     @State private var editing = false
     @State private var draft = ""
+    /// True while the inline "Never for…" scope choice is showing.
+    @State private var choosingNever = false
 
     init(item: ProposalItem, overlay: OverlayModel) {
         self.item = item
@@ -340,6 +342,15 @@ struct ProposalCard: View {
                 Text(p.title ?? "Can I do something?")
                     .font(.system(size: 13, weight: .bold, design: .rounded))
                 Spacer(minLength: 0)
+                if p.isExploration {
+                    Text("Trying this out")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        .help("Pixie is learning which messages you want reply ideas for.")
+                }
             }
             if editing {
                 TextEditor(text: $draft)
@@ -354,43 +365,107 @@ struct ProposalCard: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            HStack(spacing: 6) {
-                if editing {
-                    Button("Send edit") {
-                        overlay.respond(to: p.proposal_id, verdict: "approve", editedText: draft)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button("Cancel") { editing = false }
-                        .buttonStyle(.bordered)
-                } else {
-                    Button("Approve") {
-                        overlay.respond(to: p.proposal_id, verdict: "approve")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    // Only message drafts are editable; the brain ignores edits to other kinds.
-                    if p.kind == "whatsapp.reply" {
-                        Button("Edit") {
-                            draft = p.draftText ?? stripQuotes(p.detail ?? "")
-                            editing = true
+            if !editing, let why = p.whyText {
+                Text(why)
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if choosingNever && !editing {
+                neverScopeChooser(p)
+            } else {
+                actionButtons(p)
+            }
+            if !editing && !choosingNever && !p.knownQuickActions.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(p.knownQuickActions) { action in
+                        Button(action.label) {
+                            overlay.respond(to: p.proposal_id, verdict: "never", scope: action.scope)
                         }
                         .buttonStyle(.bordered)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     }
-                    Button("Not now") {
-                        overlay.respond(to: p.proposal_id, verdict: "reject")
-                    }
-                    .buttonStyle(.bordered)
-                    Button("Never") {
-                        overlay.respond(to: p.proposal_id, verdict: "never")
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(Color.red.opacity(0.8))
+                    Spacer(minLength: 0)
                 }
+                .controlSize(.mini)
             }
-            .controlSize(.small)
         }
         .frame(width: 300)
         .cardStyle()
+    }
+
+    @ViewBuilder
+    private func actionButtons(_ p: ProposeData) -> some View {
+        HStack(spacing: 6) {
+            if editing {
+                Button("Send edit") {
+                    overlay.respond(to: p.proposal_id, verdict: "approve", editedText: draft)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Cancel") { editing = false }
+                    .buttonStyle(.bordered)
+            } else {
+                Button("Approve") {
+                    overlay.respond(to: p.proposal_id, verdict: "approve")
+                }
+                .buttonStyle(.borderedProminent)
+                // Only message drafts are editable; the brain ignores edits to other kinds.
+                if p.kind == "whatsapp.reply" {
+                    Button("Edit") {
+                        draft = p.draftText ?? stripQuotes(p.detail ?? "")
+                        editing = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Button("Not now") {
+                    overlay.respond(to: p.proposal_id, verdict: "reject")
+                }
+                .buttonStyle(.bordered)
+                Button("Never") {
+                    // Smart reply cards let the user choose what "never" covers (PROTOCOL.md §5).
+                    if p.kind == "whatsapp.reply" {
+                        choosingNever = true
+                    } else {
+                        overlay.respond(to: p.proposal_id, verdict: "never")
+                    }
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Color.red.opacity(0.8))
+            }
+        }
+        .controlSize(.small)
+    }
+
+    /// Inline scope choice for "Never": This person / This group (group cards only) / Messages like this.
+    @ViewBuilder
+    private func neverScopeChooser(_ p: ProposeData) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Never suggest replies for…")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Button("This person") {
+                    overlay.respond(to: p.proposal_id, verdict: "never", scope: FeedbackScope.contact)
+                }
+                if p.isGroupCard {
+                    Button("This group") {
+                        overlay.respond(to: p.proposal_id, verdict: "never", scope: FeedbackScope.group)
+                    }
+                }
+            }
+            .buttonStyle(.bordered)
+            HStack(spacing: 6) {
+                Button("Messages like this") {
+                    overlay.respond(to: p.proposal_id, verdict: "never", scope: FeedbackScope.likeThis)
+                }
+                .buttonStyle(.bordered)
+                Button("Cancel") { choosingNever = false }
+                    .buttonStyle(.link)
+            }
+        }
+        .controlSize(.small)
     }
 
     private func icon(for kind: String?) -> String {

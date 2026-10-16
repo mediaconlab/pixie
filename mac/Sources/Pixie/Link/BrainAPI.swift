@@ -85,6 +85,21 @@ struct BrainAPI {
         _ = try await send(request("DELETE", "/v1/memory"), as: OKResponse.self)
     }
 
+    // MARK: Reply rules (PROTOCOL.md §5)
+
+    func replyRules() async throws -> [ReplyRule] {
+        try await send(request("GET", "/v1/reply-rules"), as: ReplyRulesResponse.self).rules
+    }
+
+    func deleteReplyRule(id: String) async throws {
+        let escaped = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        _ = try await send(request("DELETE", "/v1/reply-rules/\(escaped)"), as: OKResponse.self)
+    }
+
+    func resetReplyLearning() async throws {
+        _ = try await send(request("POST", "/v1/reply-rules/reset-learning", body: Data("{}".utf8)), as: OKResponse.self)
+    }
+
     /// wss://host/v1/ws (http → ws, https → wss).
     var webSocketURL: URL? {
         guard var comps = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else { return nil }

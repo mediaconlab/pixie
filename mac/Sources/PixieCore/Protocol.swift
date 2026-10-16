@@ -220,20 +220,40 @@ public struct UserFeedbackData: Codable, Equatable, Sendable {
     public var proposal_id: String
     public var verdict: String // "approve" | "reject" | "never"
     public var edited_text: String?
-    public init(proposal_id: String, verdict: String, edited_text: String? = nil) {
+    /// PROTOCOL.md §5: "contact" | "group" | "like_this", used with `verdict: "never"`. Omitted when nil.
+    public var scope: String?
+    public init(proposal_id: String, verdict: String, edited_text: String? = nil, scope: String? = nil) {
         self.proposal_id = proposal_id
         self.verdict = verdict
         self.edited_text = edited_text
+        self.scope = scope
     }
 
-    // Omit edited_text entirely when nil (it is optional in the protocol).
-    enum CodingKeys: String, CodingKey { case proposal_id, verdict, edited_text }
+    // Omit optional fields entirely when nil (they are optional in the protocol).
+    enum CodingKeys: String, CodingKey { case proposal_id, verdict, edited_text, scope }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        proposal_id = try c.decode(String.self, forKey: .proposal_id)
+        verdict = try c.decode(String.self, forKey: .verdict)
+        edited_text = try? c.decode(String.self, forKey: .edited_text)
+        scope = try? c.decode(String.self, forKey: .scope)
+    }
+
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(proposal_id, forKey: .proposal_id)
         try c.encode(verdict, forKey: .verdict)
         try c.encodeIfPresent(edited_text, forKey: .edited_text)
+        try c.encodeIfPresent(scope, forKey: .scope)
     }
+}
+
+/// Scopes for `user.feedback` with `verdict: "never"` (PROTOCOL.md §5).
+public enum FeedbackScope {
+    public static let contact = "contact"
+    public static let group = "group"
+    public static let likeThis = "like_this"
 }
 
 public struct ExecResultData: Codable, Equatable, Sendable {
@@ -366,6 +386,26 @@ public struct DigestData: Codable, Equatable, Sendable {
     public var items: [DigestItem]
 }
 
+/// One-tap "never" shortcut on a smart reply card (PROTOCOL.md §5).
+public struct ProposalQuickAction: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var label: String
+
+    public init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+
+    /// The `user.feedback` scope this action sends with `verdict: "never"`; nil for ids this app doesn't know.
+    public var scope: String? {
+        switch id {
+        case "never_contact": return FeedbackScope.contact
+        case "never_group": return FeedbackScope.group
+        default: return nil
+        }
+    }
+}
+
 public struct ProposeData: Codable, Equatable, Sendable {
     public var proposal_id: String
     public var kind: String?
@@ -374,10 +414,89 @@ public struct ProposeData: Codable, Equatable, Sendable {
     public var payload: JSONValue?
     public var executor: String?
     public var expires_at: Double?
+    /// PROTOCOL.md §5: one line explaining why the card was shown.
+    public var why: String?
+    /// PROTOCOL.md §5: true for a labelled "trying this out" card.
+    public var exploration: Bool?
+    /// PROTOCOL.md §5: malformed entries are dropped; unknown ids are kept here (see `knownQuickActions`).
+    public var quick_actions: [ProposalQuickAction]?
+
+    public init(proposal_id: String, kind: String? = nil, title: String? = nil, detail: String? = nil, payload: JSONValue? = nil, executor: String? = nil, expires_at: Double? = nil, why: String? = nil, exploration: Bool? = nil, quick_actions: [ProposalQuickAction]? = nil) {
+        self.proposal_id = proposal_id
+        self.kind = kind
+        self.title = title
+        self.detail = detail
+        self.payload = payload
+        self.executor = executor
+        self.expires_at = expires_at
+        self.why = why
+        self.exploration = exploration
+        self.quick_actions = quick_actions
+    }
+
+    enum CodingKeys: String, CodingKey { case proposal_id, kind, title, detail, payload, executor, expires_at, why, exploration, quick_actions }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        proposal_id = try c.decode(String.self, forKey: .proposal_id)
+        kind = try? c.decode(String.self, forKey: .kind)
+        title = try? c.decode(String.self, forKey: .title)
+        detail = try? c.decode(String.self, forKey: .detail)
+        if let v = try? c.decode(JSONValue.self, forKey: .payload), v != .null {
+            payload = v
+        } else {
+            payload = nil
+        }
+        executor = try? c.decode(String.self, forKey: .executor)
+        expires_at = try? c.decode(Double.self, forKey: .expires_at)
+        why = try? c.decode(String.self, forKey: .why)
+        exploration = try? c.decode(Bool.self, forKey: .exploration)
+        if let raw = try? c.decode([JSONValue].self, forKey: .quick_actions) {
+            quick_actions = raw.compactMap { v -> ProposalQuickAction? in
+                guard let id = v["id"]?.stringValue, !id.isEmpty,
+                      let label = v["label"]?.stringValue, !label.isEmpty else { return nil }
+                return ProposalQuickAction(id: id, label: label)
+            }
+        } else {
+            quick_actions = nil
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(proposal_id, forKey: .proposal_id)
+        try c.encodeIfPresent(kind, forKey: .kind)
+        try c.encodeIfPresent(title, forKey: .title)
+        try c.encodeIfPresent(detail, forKey: .detail)
+        try c.encodeIfPresent(payload, forKey: .payload)
+        try c.encodeIfPresent(executor, forKey: .executor)
+        try c.encodeIfPresent(expires_at, forKey: .expires_at)
+        try c.encodeIfPresent(why, forKey: .why)
+        try c.encodeIfPresent(exploration, forKey: .exploration)
+        try c.encodeIfPresent(quick_actions, forKey: .quick_actions)
+    }
 
     /// The editable draft text for this proposal (payload.text for whatsapp.reply / reminder).
     public var draftText: String? {
         payload?["text"]?.stringValue
+    }
+
+    /// Trimmed `why`, or nil when absent/blank.
+    public var whyText: String? {
+        let t = (why ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
+    public var isExploration: Bool { exploration ?? false }
+
+    /// Quick actions this app knows how to send (unknown ids are hidden).
+    public var knownQuickActions: [ProposalQuickAction] {
+        (quick_actions ?? []).filter { $0.scope != nil }
+    }
+
+    /// A card is a group card when the brain offered a `never_group` action.
+    public var isGroupCard: Bool {
+        (quick_actions ?? []).contains { $0.id == "never_group" }
     }
 }
 
@@ -528,4 +647,97 @@ public struct OKResponse: Codable, Equatable, Sendable {
 public struct APIErrorBody: Codable, Equatable, Sendable {
     public var error: String
     public var message: String?
+}
+
+// MARK: - Reply rules (PROTOCOL.md §5)
+
+public struct ReplyRule: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var effect: String          // "always" | "never" | "only"
+    public var subject_type: String    // "contact" | "group" | "relation" | "all_groups" | "all_dms" | "all"
+    public var subject_label: String?
+    public var conditions: JSONValue?
+    public var expires_at: Double?     // ms since epoch
+    public var source: String?
+    public var utterance: String?
+    public var created_at: Double?
+
+    public init(id: String, effect: String, subject_type: String, subject_label: String? = nil, conditions: JSONValue? = nil, expires_at: Double? = nil, source: String? = nil, utterance: String? = nil, created_at: Double? = nil) {
+        self.id = id
+        self.effect = effect
+        self.subject_type = subject_type
+        self.subject_label = subject_label
+        self.conditions = conditions
+        self.expires_at = expires_at
+        self.source = source
+        self.utterance = utterance
+        self.created_at = created_at
+    }
+
+    enum CodingKeys: String, CodingKey { case id, effect, subject_type, subject_label, conditions, expires_at, source, utterance, created_at }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        effect = (try? c.decode(String.self, forKey: .effect)) ?? ""
+        subject_type = (try? c.decode(String.self, forKey: .subject_type)) ?? ""
+        subject_label = try? c.decode(String.self, forKey: .subject_label)
+        if let v = try? c.decode(JSONValue.self, forKey: .conditions), v != .null {
+            conditions = v
+        } else {
+            conditions = nil
+        }
+        expires_at = try? c.decode(Double.self, forKey: .expires_at)
+        source = try? c.decode(String.self, forKey: .source)
+        utterance = try? c.decode(String.self, forKey: .utterance)
+        created_at = try? c.decode(Double.self, forKey: .created_at)
+    }
+
+    public var effectLabel: String {
+        switch effect {
+        case "always": return "Always"
+        case "never": return "Never"
+        case "only": return "Only"
+        default: return effect.isEmpty ? "Rule" : effect.capitalized
+        }
+    }
+
+    public var subjectLabel: String {
+        let label = (subject_label ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        switch subject_type {
+        case "all_groups": return label.isEmpty ? "All groups" : label
+        case "all_dms": return label.isEmpty ? "All direct chats" : label
+        case "all": return label.isEmpty ? "Everyone" : label
+        case "group":
+            if label.isEmpty { return "A group" }
+            return label.lowercased().hasSuffix("group") ? label : label + " group"
+        default:
+            return label.isEmpty ? (subject_type.isEmpty ? "Someone" : subject_type) : label
+        }
+    }
+
+    /// e.g. "Always · Mom", "Never · Office group".
+    public var displayLabel: String { "\(effectLabel) · \(subjectLabel)" }
+
+    public var expiresDate: Date? {
+        guard let ms = expires_at else { return nil }
+        return Date(timeIntervalSince1970: ms / 1000)
+    }
+}
+
+/// `GET /v1/reply-rules`. Malformed rules are dropped instead of failing the whole list.
+public struct ReplyRulesResponse: Decodable, Equatable, Sendable {
+    public var rules: [ReplyRule]
+
+    public init(rules: [ReplyRule]) {
+        self.rules = rules
+    }
+
+    enum CodingKeys: String, CodingKey { case rules }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = (try? c.decode([JSONValue].self, forKey: .rules)) ?? []
+        rules = raw.compactMap { $0.decode(ReplyRule.self) }
+    }
 }

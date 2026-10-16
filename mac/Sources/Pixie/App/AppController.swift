@@ -101,9 +101,9 @@ final class AppController: NSObject, NSWindowDelegate {
     private func wireAvatarAndOverlay() {
         avatar.onTap = { [weak self] in self?.characterTapped() }
         overlay.onSend = { [weak self] text, via in self?.sendSay(text, via: via) }
-        overlay.onFeedback = { [weak self] pid, verdict, edited in
+        overlay.onFeedback = { [weak self] pid, verdict, edited, scope in
             guard let self else { return }
-            self.link.send("user.feedback", UserFeedbackData(proposal_id: pid, verdict: verdict, edited_text: edited))
+            self.link.send("user.feedback", UserFeedbackData(proposal_id: pid, verdict: verdict, edited_text: edited, scope: scope))
             switch verdict {
             case "approve":
                 self.avatar.setEmotion(.happy, intensity: 0.7, hold: 3)
@@ -526,6 +526,7 @@ final class AppController: NSObject, NSWindowDelegate {
         }
         let view = SettingsView(
             prefs: prefs,
+            replyRules: ReplyRulesModel(api: { [weak self] in self?.currentAPI() }),
             onBrainURLCommitted: { [weak self] in
                 guard let self else { return }
                 self.link.disconnect()
