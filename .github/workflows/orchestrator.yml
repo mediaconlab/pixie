@@ -65,4 +65,5 @@ jobs:
         run: |
           URL=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)
           echo "Orchestrator URL: $URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Orchestrator URL::$URL"
           for i in 1 2 3 4 5; do curl -fsS "$URL/health" && exit 0; sleep 5; done; exit 1
