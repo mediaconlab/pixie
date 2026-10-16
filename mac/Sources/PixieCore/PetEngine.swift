@@ -478,8 +478,11 @@ public struct PetEngine: Sendable {
     public mutating func setEnv(_ e: PetEnvData, now: Date) {
         let t = now.timeIntervalSince1970
         let old = state.knowledge.env?.weather?.condition
-        state.knowledge.env = e
-        if let zone = PetEngine.zone(e.tz), zone.identifier != timeZone.identifier { timeZone = zone }
+        var env = e
+        // Keep the last valid zone when an update has none (or an invalid one), so a restart restores it.
+        if PetEngine.zone(env.tz) == nil { env.tz = state.knowledge.env?.tz }
+        state.knowledge.env = env
+        if let zone = PetEngine.zone(env.tz), zone.identifier != timeZone.identifier { timeZone = zone }
         guard let cond = e.weather?.condition, cond != old else { return }
         state.life.lastWeather = cond
         guard old != nil else { return } // the first report after launch is not news

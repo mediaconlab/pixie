@@ -268,7 +268,7 @@ final class PetEngineTests: XCTestCase {
     func testEnvTimeZoneDrivesTheEngine() {
         var e = makeEngine()
         let now = Date(timeIntervalSince1970: t0 + 5)
-        XCTAssertEqual(e.timeZone.identifier, "UTC")
+        XCTAssertEqual(e.timeZone.identifier, utc.identifier)
         e.setEnv(PetEnvData(tz: "Asia/Kolkata"), now: now)
         XCTAssertEqual(e.timeZone.identifier, "Asia/Kolkata")
         // 15:00 UTC is 20:30 in Kolkata.
