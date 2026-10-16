@@ -2,7 +2,7 @@ name: Apps (Mac, Android, VS Code)
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     tags: ["v*"]
     paths-ignore: ["brain/**", "*.md"]
   pull_request:

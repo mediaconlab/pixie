@@ -19,17 +19,6 @@ The wire contract between all of them is [`PROTOCOL.md`](PROTOCOL.md).
 4. **First run:** open Pixie on the Mac, paste the orchestrator URL and your name. The first registration claims the instance; nobody else can register after that.
 5. **Pair devices:** menu bar → *Pair a device…* shows a 6-digit code and QR. Scan the QR with the phone camera (opens the Android app), or type the code in VS Code (*Pixie: Pair with Pixie*).
 
-## Environments
-
-| Environment | Branch | Worker | Notes |
-| --- | --- | --- | --- |
-| Production | `main` | `pixie-orchestrator` | D1 `pixie-orchestrator`, signup closed after the owner registers, nightly learning cron |
-| Staging | `dev` | `pixie-orchestrator-staging` | D1 `pixie-orchestrator-staging`, signup open so test accounts can be made, no cron |
-
-Workflow: work on `dev`; each push deploys staging (the run prints the staging URL). Test by pointing a test
-install of the app at the staging URL. Merge `dev` → `main` to ship to production. The *Apps* workflow builds
-artifacts on both branches; releases still come only from `v*` tags.
-
 ## What Pixie may decide alone
 
 The orchestrator variable `AUTONOMY` in `brain/wrangler.jsonc` sets the level. It is **`full`**: no topic is forbidden, and messages you ask Pixie to send go out without an approval tap. Set it to `guarded` and redeploy to bring back the original rules.
