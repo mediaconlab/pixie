@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pixie-orchestrator",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "ai": { "binding": "AI" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pixie-orchestrator",
+      "database_id": "60dea98a-d92e-4115-b696-6141820f2351",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "USER_BRAIN", "class_name": "UserBrain" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserBrain"] }],
+  "triggers": { "crons": ["30 20 * * *"] },
+  "vars": { "ALLOW_SIGNUP": "0" },
+  "observability": { "enabled": true }
+}

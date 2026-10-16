@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Blob body: a soft rounded drop -->
+    <path
+        android:fillColor="@color/pixie_blob"
+        android:pathData="M54,27 C68,27 80,37 80,53 C80,69 72,81 54,81 C36,81 28,69 28,53 C28,37 40,27 54,27 Z" />
+    <!-- Cheeks -->
+    <path
+        android:fillColor="#66FF4F7B"
+        android:pathData="M37,61 m-4,0 a4,4 0,1 1,8 0 a4,4 0,1 1,-8 0" />
+    <path
+        android:fillColor="#66FF4F7B"
+        android:pathData="M71,61 m-4,0 a4,4 0,1 1,8 0 a4,4 0,1 1,-8 0" />
+    <!-- Eyes -->
+    <path
+        android:fillColor="#2B2140"
+        android:pathData="M45,52 m-3.5,0 a3.5,3.5 0,1 1,7 0 a3.5,3.5 0,1 1,-7 0" />
+    <path
+        android:fillColor="#2B2140"
+        android:pathData="M63,52 m-3.5,0 a3.5,3.5 0,1 1,7 0 a3.5,3.5 0,1 1,-7 0" />
+    <!-- Eye sparkles -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M46.2,50.6 m-1.2,0 a1.2,1.2 0,1 1,2.4 0 a1.2,1.2 0,1 1,-2.4 0" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M64.2,50.6 m-1.2,0 a1.2,1.2 0,1 1,2.4 0 a1.2,1.2 0,1 1,-2.4 0" />
+    <!-- Smile -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#2B2140"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round"
+        android:pathData="M49,60 Q54,65 59,60" />
+</vector>

@@ -1,0 +1,160 @@
+{
+  "name": "pixie-vscode",
+  "displayName": "Pixie",
+  "description": "Pixie, your desktop companion, inside VS Code: ask about code, get suggestions and approve patches.",
+  "publisher": "mediaconlab",
+  "version": "1.0.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mediaconlab/pixie"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other",
+    "AI"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "package": "npm run build && vsce package --no-dependencies --out pixie-vscode.vsix",
+    "vscode:prepublish": "npm run build"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "pixie.pair",
+        "title": "Pair with Pixie",
+        "category": "Pixie"
+      },
+      {
+        "command": "pixie.ask",
+        "title": "Ask about this code",
+        "category": "Pixie"
+      },
+      {
+        "command": "pixie.explainSelection",
+        "title": "Explain selection",
+        "category": "Pixie"
+      },
+      {
+        "command": "pixie.fixErrors",
+        "title": "Fix errors in this file",
+        "category": "Pixie"
+      },
+      {
+        "command": "pixie.openPanel",
+        "title": "Open panel",
+        "category": "Pixie"
+      },
+      {
+        "command": "pixie.unpair",
+        "title": "Unpair",
+        "category": "Pixie"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "pixie.ask",
+          "group": "pixie@1"
+        },
+        {
+          "command": "pixie.explainSelection",
+          "when": "editorHasSelection",
+          "group": "pixie@2"
+        },
+        {
+          "command": "pixie.fixErrors",
+          "group": "pixie@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Pixie",
+      "properties": {
+        "pixie.brainUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of your Pixie brain (e.g. https://pixie-orchestrator.<subdomain>.workers.dev). Set automatically by \"Pixie: Pair with Pixie\". Application-scoped so a workspace cannot redirect your device token.",
+          "scope": "application"
+        },
+        "pixie.deviceName": {
+          "type": "string",
+          "default": "",
+          "description": "Name this editor reports to Pixie. Defaults to \"VS Code on <hostname>\".",
+          "scope": "application"
+        },
+        "pixie.shareOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Send the active file to Pixie whenever you save it."
+        },
+        "pixie.shareDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send the active file to Pixie when its error diagnostics change (debounced 3 s, at most once every 30 s)."
+        },
+        "pixie.excludeGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/.env*",
+            "**/*.pem",
+            "**/*.key",
+            "**/*secret*",
+            "**/node_modules/**"
+          ],
+          "description": "Files matching any of these globs are never sent to Pixie.",
+          "scope": "resource"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "pixie",
+          "title": "Pixie",
+          "icon": "dist/media/pixie.svg"
+        }
+      ]
+    },
+    "views": {
+      "pixie": [
+        {
+          "type": "webview",
+          "id": "pixie.panel",
+          "name": "Pixie"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "1.90.0",
+    "@types/ws": "^8.18.2",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  },
+  "keywords": [
+    "pixie",
+    "assistant",
+    "companion",
+    "ai"
+  ]
+}
