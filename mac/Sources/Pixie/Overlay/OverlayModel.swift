@@ -27,6 +27,8 @@ final class OverlayModel: ObservableObject {
     @Published var digestVisible = false
     @Published private(set) var proposals: [ProposalItem] = []
     @Published private(set) var toast: String?
+    /// Persistent "Update Pixie" card (brain sent `update_required`). Never auto-hides.
+    @Published private(set) var updateMessage: String?
 
     // Chat
     @Published var chatOpen = false
@@ -196,6 +198,16 @@ final class OverlayModel: ObservableObject {
     /// "Not now" maps to `reject`.
     func removeProposal(_ id: String) {
         withAnimation(.easeOut(duration: 0.2)) { proposals.removeAll { $0.id == id } }
+    }
+
+    // MARK: Update required
+
+    func showUpdateRequired(_ message: String) {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { updateMessage = message }
+    }
+
+    func clearUpdateRequired() {
+        updateMessage = nil
     }
 
     // MARK: Toast

@@ -76,10 +76,11 @@ function setup() {
   const envelopes: unknown[] = [];
   const states: string[] = [];
   let unauthorized = 0;
+  const updates: string[] = [];
   const conn = new Connection({
     wsUrl: "wss://x.dev/v1/ws",
     token: "tok",
-    hello: { kind: "ide", name: "VS Code", app_version: "1.0.0", capabilities: ["code"] },
+    hello: { kind: "ide", name: "VS Code", protocol: 1, app_version: "1.0.0", capabilities: ["code"] },
     factory: (url, headers) => {
       const s = new FakeSocket(url, headers);
       sockets.push(s);
@@ -91,9 +92,10 @@ function setup() {
       onEnvelope: (e) => envelopes.push(e),
       onState: (s) => states.push(s),
       onUnauthorized: () => unauthorized++,
+      onUpdateRequired: (m) => updates.push(m),
     },
   });
-  return { conn, sockets, timers, envelopes, states, unauthorized: () => unauthorized };
+  return { conn, sockets, timers, envelopes, states, updates, unauthorized: () => unauthorized };
 }
 
 describe("Connection", () => {
@@ -104,7 +106,7 @@ describe("Connection", () => {
     expect(sockets[0].headers.Authorization).toBe("Bearer tok");
     sockets[0].open();
     const frames = sockets[0].sent.map((s) => JSON.parse(s));
-    expect(frames[0]).toMatchObject({ v: 1, type: "hello", data: { kind: "ide", capabilities: ["code"] } });
+    expect(frames[0]).toMatchObject({ v: 1, type: "hello", data: { kind: "ide", protocol: 1, app_version: "1.0.0", capabilities: ["code"] } });
     expect(frames[1]).toMatchObject({ type: "user.say", data: { text: "queued" } });
     expect(conn.queued).toBe(0);
   });
@@ -182,6 +184,44 @@ describe("Connection", () => {
     timers.advance(60000);
     expect(sockets).toHaveLength(1);
     expect(unauthorized()).toBe(1);
+  });
+
+  it("update_required stops reconnecting and reports the message once", () => {
+    const { conn, sockets, timers, envelopes, updates } = setup();
+    conn.start();
+    sockets[0].open();
+    sockets[0].emit(
+      "message",
+      JSON.stringify({ v: 1, id: "b", ts: 1, type: "update_required", data: { min_protocol: 2, latest_protocol: 2, message: "Please update Pixie to keep using it." } }),
+      false,
+    );
+    sockets[0].emit("close", 4002, "update required");
+    timers.advance(120000);
+    expect(sockets).toHaveLength(1);
+    expect(updates).toEqual(["Please update Pixie to keep using it."]);
+    expect(envelopes).toHaveLength(0);
+    expect(conn.state).toBe("closed");
+    expect(conn.updateRequiredMessage).toBe("Please update Pixie to keep using it.");
+  });
+
+  it("close code 4002 alone also stops reconnecting", () => {
+    const { conn, sockets, timers, updates } = setup();
+    conn.start();
+    sockets[0].open();
+    sockets[0].close(4002);
+    timers.advance(120000);
+    expect(sockets).toHaveLength(1);
+    expect(updates).toEqual(["Please update Pixie to keep using it."]);
+  });
+
+  it("start() after an update_required tries again", () => {
+    const { conn, sockets } = setup();
+    conn.start();
+    sockets[0].open();
+    sockets[0].close(4002);
+    conn.start();
+    expect(sockets).toHaveLength(2);
+    expect(conn.updateRequiredMessage).toBeNull();
   });
 
   it("stop() prevents reconnects", () => {

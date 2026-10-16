@@ -77,7 +77,7 @@ describe("hello / chat", () => {
     const w = h.of("welcome");
     expect(w).toHaveLength(1);
     expect(w[0]!.device).toBe("mac1");
-    expect(w[0]!.data).toMatchObject({ user_name: "Ishaan", persona: { name: "Pixie" }, mood: { valence: 0.2, energy: 0.6 } });
+    expect(w[0]!.data).toMatchObject({ user_name: "Ishaan", persona: { name: "Pixie" }, mood: { valence: 0.2, energy: 0.6 }, protocol: 1, min_protocol: 1 });
     expect(w[0]!.data.devices).toHaveLength(3);
     expect(w[0]!.data.devices.every((d: any) => d.online)).toBe(true);
   });

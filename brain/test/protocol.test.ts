@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { envelope, parseEnvelope, perf, sanitizePerformance } from "../src/protocol";
+import { MIN_PROTOCOL, PROTOCOL_VERSION, envelope, needsUpdate, parseEnvelope, perf, sanitizePerformance, updateRequiredData } from "../src/protocol";
 
 const env = (type: string, data: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ v: 1, id: "evt_1", ts: 123, type, data, ...extra });
 
@@ -18,6 +18,24 @@ describe("parseEnvelope", () => {
     const r = parseEnvelope(env("hello", { kind: "mac", name: "MacBook Air", app_version: "1.0.0", capabilities: ["screen", 3] }));
     expect(r).toMatchObject({ ok: true, event: { type: "hello", id: "evt_1", ts: 123, data: { kind: "mac", capabilities: ["screen"] } } });
     expect(parseEnvelope(env("hello", { kind: "toaster" }))).toMatchObject({ ok: false });
+  });
+  it("hello.protocol defaults to 1 when missing or invalid", () => {
+    const get = (data: Record<string, unknown>) => {
+      const r = parseEnvelope(env("hello", { kind: "mac", ...data }));
+      return r.ok && r.event.type === "hello" ? r.event.data.protocol : -1;
+    };
+    expect(get({})).toBe(1);
+    expect(get({ protocol: "2" })).toBe(1);
+    expect(get({ protocol: 0 })).toBe(1);
+    expect(get({ protocol: 1.5 })).toBe(1);
+    expect(get({ protocol: 3 })).toBe(3);
+  });
+  it("update_required gating", () => {
+    expect(PROTOCOL_VERSION).toBe(1);
+    expect(MIN_PROTOCOL).toBe(1);
+    expect(needsUpdate(1)).toBe(false);
+    expect(needsUpdate(MIN_PROTOCOL - 1)).toBe(true);
+    expect(updateRequiredData()).toEqual({ min_protocol: 1, latest_protocol: 1, message: "Please update Pixie to keep using it." });
   });
   it("parses ArrayBuffer frames", () => {
     const r = parseEnvelope(new TextEncoder().encode(env("user.say", { text: "hi" })).buffer as ArrayBuffer);

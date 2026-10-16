@@ -2,6 +2,21 @@
 
 export const PROTOCOL_VERSION = 1;
 export const APP_VERSION = "1.0.0";
+/** WebSocket close code the brain uses after `update_required` (PROTOCOL.md §0). */
+export const CLOSE_UPDATE_REQUIRED = 4002;
+export const DEFAULT_UPDATE_MESSAGE = "Please update Pixie to keep using it.";
+
+export interface UpdateRequiredData {
+  min_protocol?: number;
+  latest_protocol?: number;
+  message?: string;
+}
+
+/** The user-facing text for an `update_required` event (falls back to the default wording). */
+export function updateMessage(data: unknown): string {
+  const m = typeof data === "object" && data !== null ? (data as UpdateRequiredData).message : undefined;
+  return typeof m === "string" && m.trim() ? m.trim().slice(0, 300) : DEFAULT_UPDATE_MESSAGE;
+}
 
 export interface Envelope<T = unknown> {
   v: 1;
@@ -32,6 +47,7 @@ export interface IdeContext {
 export interface HelloData {
   kind: "ide";
   name: string;
+  protocol: number;
   app_version: string;
   capabilities: string[];
 }

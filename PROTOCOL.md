@@ -8,6 +8,42 @@ All JSON is UTF-8. All timestamps are Unix **milliseconds**.
 
 ---
 
+## 0. Versioning
+
+Two numbers travel in every device's `hello`:
+
+- **`protocol`** (integer, current **1**): the version of *this contract*. It says which wire shapes the app
+  understands. A missing `protocol` is treated as `1` (apps that predate the field).
+- **`app_version`** (string, e.g. `"1.0.0"`): the app's own release version. Informational only (logs,
+  support); the brain never gates on it.
+
+The brain has two constants: `PROTOCOL_VERSION` (the newest protocol it speaks) and `MIN_PROTOCOL` (the oldest
+it still serves). Both are returned in `welcome` and on `GET /health` as `protocol` and `min_protocol`.
+
+**Too-old app.** If `hello.protocol < MIN_PROTOCOL`, the brain sends
+
+```json
+{ "v": 1, "type": "update_required", "data": { "min_protocol": 2, "latest_protocol": 2, "message": "Please update Pixie to keep using it." } }
+```
+
+and closes the socket with code **4002**. On either signal the app must **stop reconnecting** (reconnecting would
+only be refused again) and show a persistent "Update Pixie" message with `message`. It reconnects only after
+the user changes settings or restarts the app.
+
+**When to bump.**
+
+- *Additive changes keep the protocol number:* new optional fields, new event types, new enum values that
+  older apps already tolerate (apps ignore unknown fields and unknown event types; unknown performance values
+  fall back as in §2.3).
+- *Breaking changes bump `PROTOCOL_VERSION`:* removing or renaming a field, changing a field's type or meaning,
+  making an optional field required. The brain must keep serving the old shape while old apps are in the wild.
+- *Raise `MIN_PROTOCOL` only after* apps that speak the new protocol have shipped and users have had time to
+  update. Raising it is what forces old apps onto the `update_required` path.
+
+The envelope's `v` stays `1`; it versions the envelope framing, not the contract.
+
+---
+
 ## 1. Auth and pairing (REST)
 
 Every device holds a **device token** (opaque string, 43 chars base64url). Send it as
@@ -16,7 +52,7 @@ set upgrade headers: `?token=<token>` query param.)
 
 | Method + path | Auth | Body → Response |
 | --- | --- | --- |
-| `GET /health` | none | → `{ "ok": true, "version": "1.0.0" }` |
+| `GET /health` | none | → `{ "ok": true, "version": "1.0.0", "protocol": 1, "min_protocol": 1 }` |
 | `POST /v1/register` | none | `{ "name": "Ishaan", "device": { "kind": "mac", "name": "MacBook Air" } }` → `{ "user_id", "device_id", "token" }`. Only works while the instance has **no owner yet** (first registration claims it) or when the env var `ALLOW_SIGNUP=1`. Otherwise `403 {"error":"registration_closed"}`. Only `kind:"mac"` may register. |
 | `POST /v1/pair/start` | Bearer | `{}` → `{ "code": "482913", "expires_at": 1760610000000, "link": "pixie://pair?u=<urlencoded base url>&c=482913" }`. 6-digit code, valid 10 min, single use. |
 | `POST /v1/pair/claim` | none | `{ "code": "482913", "device": { "kind": "android" \| "ide", "name": "Pixel 8" } }` → `{ "user_id", "device_id", "token" }`. `404 {"error":"bad_code"}` if wrong/expired. |
@@ -51,7 +87,7 @@ Error bodies are always `{ "error": "<snake_case_code>", "message"?: "..." }`.
 
 | type | sender | data |
 | --- | --- | --- |
-| `hello` | all, first frame after connect | `{ "kind": "mac"\|"android"\|"ide", "name": "MacBook Air", "app_version": "1.0.0", "capabilities": ["screen","audio","voice","notify","whatsapp","calls","code"] }` |
+| `hello` | all, first frame after connect | `{ "kind": "mac"\|"android"\|"ide", "name": "MacBook Air", "protocol": 1, "app_version": "1.0.0", "capabilities": ["screen","audio","voice","notify","whatsapp","calls","code"] }` |
 | `user.say` | mac, ide | `{ "text": "what's this error?", "via": "typed"\|"voice" }` |
 | `state.update` | mac | `{ "activity": "idle"\|"coding"\|"meeting"\|"video"\|"browsing"\|"away", "front_app": "Xcode", "focus_mode": false, "watching": false }` — send on change only |
 | `phone.call` | android | `{ "state": "ringing"\|"answered"\|"ended"\|"missed", "number": "+9198...", "name": "Mom" \| null }` |
@@ -66,7 +102,8 @@ Error bodies are always `{ "error": "<snake_case_code>", "message"?: "..." }`.
 
 | type | to | data |
 | --- | --- | --- |
-| `welcome` | the connecting device | `{ "user_name": "Ishaan", "persona": { "name": "Pixie" }, "mood": { "valence": 0.3, "energy": 0.7 }, "devices": [ { "id","kind","name","online" } ] }` |
+| `welcome` | the connecting device | `{ "user_name": "Ishaan", "persona": { "name": "Pixie" }, "mood": { "valence": 0.3, "energy": 0.7 }, "devices": [ { "id","kind","name","online" } ], "protocol": 1, "min_protocol": 1 }` |
+| `update_required` | a device whose `hello.protocol` is below `min_protocol` | `{ "min_protocol": 2, "latest_protocol": 2, "message": "Please update Pixie to keep using it." }`, then close code 4002 (see §0) |
 | `bot.perform` | mac (and ide for replies to ide) | **Performance** (below) |
 | `bot.notice` | mac | `{ "kind": "call"\|"message", "from": "Mom", "preview": "Call me when free", "app": "whatsapp", "urgency": 0.0-1.0, "summary": "Mom wants a call back, sounds casual", "interrupt": true }` — mac shows a caller/message card; `interrupt:false` means show quietly in the digest |
 | `bot.digest` | mac | `{ "items": [ { "from", "app", "summary", "urgency", "ts" } ] }` — batched low-urgency items |

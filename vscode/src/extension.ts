@@ -13,6 +13,7 @@ import { PixiePanel, VIEW_ID } from "./panel";
 import { applyChanges, PATCHED_SCHEME, PatchedContentProvider, planPatch, resolveFile, showDiff } from "./patcher";
 import {
   APP_VERSION,
+  PROTOCOL_VERSION,
   CodePatchPayload,
   emotionWord,
   Envelope,
@@ -139,11 +140,12 @@ class PixieExtension implements vscode.Disposable {
       wsUrl,
       token,
       factory,
-      hello: { kind: "ide", name: this.deviceName(), app_version: APP_VERSION, capabilities: ["code"] },
+      hello: { kind: "ide", name: this.deviceName(), protocol: PROTOCOL_VERSION, app_version: APP_VERSION, capabilities: ["code"] },
       events: {
         onState: (s) => this.setConnState(s),
         onEnvelope: (env) => this.onEnvelope(env),
         onUnauthorized: () => void this.onUnauthorized(),
+        onUpdateRequired: (m) => this.onUpdateRequired(m),
         onLog: (m) => this.log(m),
       },
     });
@@ -224,6 +226,13 @@ class PixieExtension implements vscode.Disposable {
       "Pair",
     );
     if (pick === "Pair") await this.pair();
+  }
+
+  /** The brain refused this extension's protocol (PROTOCOL.md §0). Reconnecting has stopped. */
+  private onUpdateRequired(message: string): void {
+    this.setConnState("closed");
+    this.panel.upsert({ id: newId("ntc"), kind: "notice", ts: Date.now(), tone: "error", text: `Update Pixie: ${message}` });
+    void vscode.window.showErrorMessage(`Pixie: ${message}`);
   }
 
   // ------------------------------------------------------------- incoming

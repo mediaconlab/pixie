@@ -19,5 +19,28 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserBrain"] }],
   "triggers": { "crons": ["30 20 * * *"] },
   "vars": { "ALLOW_SIGNUP": "0", "AUTONOMY": "full" },
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  // Staging: `wrangler deploy --env staging` (pushes to `dev`). Bindings are not inherited from the
+  // top level, so every one is repeated here. Own D1 database, signup open for test accounts, no cron.
+  "env": {
+    "staging": {
+      "name": "pixie-orchestrator-staging",
+      "ai": { "binding": "AI" },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "pixie-orchestrator-staging",
+          "database_id": "aa7dfcd9-8f2d-4d83-8e78-bc24fd5ad6cd",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [{ "name": "USER_BRAIN", "class_name": "UserBrain" }]
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserBrain"] }],
+      "triggers": { "crons": [] },
+      "vars": { "ALLOW_SIGNUP": "1", "AUTONOMY": "full" },
+      "observability": { "enabled": true }
+    }
+  }
 }

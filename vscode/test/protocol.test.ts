@@ -9,9 +9,19 @@ import {
   normaliseBrainUrl,
   normalisePerformance,
   parseFrame,
+  updateMessage,
   wsUrlFor,
 } from "../src/protocol";
 import { DebouncedGate, Clock } from "../src/throttle";
+
+describe("updateMessage", () => {
+  it("uses the brain's message, falling back to the default", () => {
+    expect(updateMessage({ message: "Update now" })).toBe("Update now");
+    expect(updateMessage({})).toBe("Please update Pixie to keep using it.");
+    expect(updateMessage(null)).toBe("Please update Pixie to keep using it.");
+    expect(updateMessage({ message: "  " })).toBe("Please update Pixie to keep using it.");
+  });
+});
 
 describe("envelopes", () => {
   it("builds v1 envelopes with unique short ids", () => {

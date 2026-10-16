@@ -1,10 +1,18 @@
 package com.mediaconlab.pixie
 
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,6 +44,12 @@ object PixieLink {
     private const val BACKOFF_MIN_MS = 1_000L
     private const val BACKOFF_MAX_MS = 30_000L
     const val APP_VERSION = "1.0.0"
+    /** Wire contract version sent as `hello.protocol` (PROTOCOL.md section 0). */
+    const val PROTOCOL_VERSION = 1
+    /** Close code the brain uses after `update_required`. */
+    const val CLOSE_UPDATE_REQUIRED = 4002
+    const val DEFAULT_UPDATE_MESSAGE = "Please update Pixie to keep using it."
+    private const val UPDATE_NOTIF_ID = 1002
 
     private val lock = Any()
     private val handler = Handler(Looper.getMainLooper())
@@ -56,6 +70,13 @@ object PixieLink {
     /** Incremented on every connect so callbacks from stale sockets are ignored. */
     private var generation = 0
     private val queue = ArrayDeque<String>()
+    /**
+     * Set when the brain says this app is too old (`update_required` / close 4002). While set, [start] and
+     * automatic reconnects do nothing; only the user's Reconnect button, unpairing or an app restart clear it.
+     */
+    @Volatile
+    var updateRequired: String? = null
+        private set
 
     private val pingRunnable = object : Runnable {
         override fun run() {
@@ -73,7 +94,7 @@ object PixieLink {
     fun start(context: Context) {
         val alreadyRunning = synchronized(lock) {
             appContext = context.applicationContext
-            val was = running
+            val was = running || updateRequired != null
             if (!was) {
                 running = true
                 backoffMs = BACKOFF_MIN_MS
@@ -90,7 +111,10 @@ object PixieLink {
             generation++
             val current = socket
             socket = null
-            if (clearQueue) queue.clear()
+            if (clearQueue) {
+                queue.clear()
+                updateRequired = null
+            }
             current
         }
         handler.removeCallbacks(pingRunnable)
@@ -99,9 +123,16 @@ object PixieLink {
         _state.value = LinkState.DISCONNECTED
     }
 
-    /** Drop the current socket and reconnect right away (e.g. network came back). */
-    fun reconnectNow() {
+    /**
+     * Drop the current socket and reconnect right away (e.g. network came back). [userInitiated] (the
+     * Reconnect button) also retries after an `update_required`, e.g. once the user has updated the brain URL.
+     */
+    fun reconnectNow(userInitiated: Boolean = false) {
         val isRunning = synchronized(lock) {
+            if (userInitiated && updateRequired != null && appContext != null) {
+                updateRequired = null
+                running = true
+            }
             if (running) backoffMs = BACKOFF_MIN_MS
             running
         }
@@ -225,11 +256,12 @@ object PixieLink {
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (!PixieLink.isCurrent(gen)) return
             if (text == "pong" || text == "ping") return
-            PixieLink.handleFrame(text)
+            PixieLink.handleFrame(gen, text)
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             webSocket.close(1000, null)
+            if (code == CLOSE_UPDATE_REQUIRED) PixieLink.requireUpdate(gen, null)
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -240,6 +272,10 @@ object PixieLink {
                 return
             }
             if (code == 4000) return // superseded by a newer connection from this same phone
+            if (code == CLOSE_UPDATE_REQUIRED) {
+                PixieLink.requireUpdate(gen, null)
+                return
+            }
             PixieLink.scheduleReconnect(gen)
         }
 
@@ -271,6 +307,7 @@ object PixieLink {
         val data = JSONObject()
             .put("kind", "android")
             .put("name", Build.MODEL ?: "Android")
+            .put("protocol", PROTOCOL_VERSION)
             .put("app_version", APP_VERSION)
             .put("capabilities", JSONArray().put("calls").put("whatsapp").put("notify"))
         return JSONObject()
@@ -282,7 +319,7 @@ object PixieLink {
             .toString()
     }
 
-    private fun handleFrame(text: String) {
+    private fun handleFrame(gen: Int, text: String) {
         val env = try {
             JSONObject(text)
         } catch (e: Exception) {
@@ -297,12 +334,73 @@ object PixieLink {
                 val ctx = synchronized(lock) { appContext } ?: return
                 handler.post { Executor.execute(ctx, data) }
             }
+            "update_required" -> {
+                val msg = data.optString("message").trim()
+                requireUpdate(gen, if (msg.isEmpty()) null else msg)
+            }
             "error" -> {
                 Log.w(TAG, "brain error: ${data.optString("code")} ${data.optString("message")}")
                 EventLog.add("link", "Brain error", data.optString("code"))
             }
             else -> Log.d(TAG, "ignored frame type $type")
         }
+    }
+
+    /**
+     * The brain no longer supports this app's protocol: stop reconnecting for good, log it and tell the user.
+     * Runs once per occurrence (the frame and the 4002 close both lead here).
+     */
+    private fun requireUpdate(gen: Int, message: String?) {
+        var ctx: Context? = null
+        var ws: WebSocket? = null
+        val text = message ?: DEFAULT_UPDATE_MESSAGE
+        synchronized(lock) {
+            if (gen != generation || updateRequired != null) return
+            updateRequired = text
+            running = false
+            generation++
+            ws = socket
+            socket = null
+            ctx = appContext
+        }
+        handler.removeCallbacks(pingRunnable)
+        handler.removeCallbacks(reconnectRunnable)
+        ws?.close(1000, "update required")
+        _state.value = LinkState.DISCONNECTED
+        Log.w(TAG, "brain requires an update: $text")
+        EventLog.add("link", "Update Pixie", text)
+        val c = ctx
+        if (c != null) handler.post { showUpdateNotification(c, text) }
+    }
+
+    @SuppressLint("MissingPermission") // POST_NOTIFICATIONS is checked explicitly below
+    private fun showUpdateNotification(context: Context, text: String) {
+        Executor.ensureActionChannel(context)
+        val open = Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val pi = PendingIntent.getActivity(
+            context,
+            UPDATE_NOTIF_ID,
+            open,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(context, Executor.CHANNEL_ACTIONS)
+            .setSmallIcon(R.drawable.ic_stat_pixie)
+            .setContentTitle("Update Pixie")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        NotificationManagerCompat.from(context).notify(UPDATE_NOTIF_ID, notification)
     }
 
     /** https://x → wss://x, http://x → ws://x, trailing slash removed. */

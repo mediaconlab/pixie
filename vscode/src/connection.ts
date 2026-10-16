@@ -3,7 +3,7 @@
  * fake socket. Implements PROTOCOL.md §2: hello first, plain-text ping every 30 s, exponential reconnect
  * backoff 1 s → 30 s, and an offline queue (cap 100, drop oldest).
  */
-import { BoundedQueue, backoffDelay, Envelope, HelloData, makeEnvelope, parseFrame } from "./protocol";
+import { BoundedQueue, backoffDelay, CLOSE_UPDATE_REQUIRED, DEFAULT_UPDATE_MESSAGE, Envelope, HelloData, makeEnvelope, parseFrame, updateMessage } from "./protocol";
 
 /** The subset of a `ws` WebSocket that we use. */
 export interface SocketLike {
@@ -26,6 +26,8 @@ export interface ConnectionEvents {
   onState?(state: ConnectionState): void;
   onEnvelope?(env: Envelope): void;
   onUnauthorized?(): void;
+  /** The brain no longer supports this extension's protocol; reconnecting has stopped. */
+  onUpdateRequired?(message: string): void;
   onLog?(msg: string): void;
 }
 
@@ -68,6 +70,7 @@ export class Connection {
   private pingTimer: unknown;
   private lastRx = 0;
   private stopped = true;
+  private updateRequired: string | null = null;
   private _state: ConnectionState = "idle";
   private readonly timers: Timers;
 
@@ -83,9 +86,15 @@ export class Connection {
     return this.queue.size;
   }
 
+  /** Set once the brain has said this extension is too old; the connection stays down until restarted. */
+  get updateRequiredMessage(): string | null {
+    return this.updateRequired;
+  }
+
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    this.updateRequired = null;
     this.attempt = 0;
     this.connect();
   }
@@ -186,6 +195,10 @@ export class Connection {
       const text = typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : String(data);
       const parsed = parseFrame(text);
       if (parsed === null || parsed === "pong") return;
+      if (parsed.type === "update_required") {
+        this.requireUpdate(updateMessage(parsed.data));
+        return;
+      }
       this.opts.events?.onEnvelope?.(parsed);
     });
 
@@ -201,6 +214,11 @@ export class Connection {
     });
 
     sock.on("close", (code: number) => {
+      if (code === CLOSE_UPDATE_REQUIRED && (this.socket === sock || this.updateRequired !== null)) {
+        if (this.socket === sock) this.socket = null;
+        this.requireUpdate(this.updateRequired ?? DEFAULT_UPDATE_MESSAGE);
+        return;
+      }
       if (this.socket !== sock) return;
       this.socket = null;
       this.timers.clearInterval(this.pingTimer);
@@ -215,6 +233,28 @@ export class Connection {
       this.setState("closed");
       this.scheduleReconnect();
     });
+  }
+
+  /** Stop for good (no reconnects) and report once. */
+  private requireUpdate(message: string): void {
+    const first = this.updateRequired === null;
+    this.updateRequired = message;
+    this.stopped = true;
+    this.clearTimers();
+    const s = this.socket;
+    this.socket = null;
+    if (s) {
+      try {
+        s.close(1000, "update required");
+      } catch {
+        /* ignore */
+      }
+    }
+    this.setState("closed");
+    if (first) {
+      this.log(`brain requires an update: ${message}`);
+      this.opts.events?.onUpdateRequired?.(message);
+    }
   }
 
   private heartbeat(sock: SocketLike): void {

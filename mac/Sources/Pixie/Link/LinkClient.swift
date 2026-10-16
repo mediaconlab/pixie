@@ -32,8 +32,12 @@ final class LinkClient {
     var onConnectionChange: ((Bool) -> Void)?
     /// Called when the brain rejects our token (HTTP 401/403 on upgrade): sign-in is needed.
     var onUnauthorized: (() -> Void)?
+    /// Called once when the brain says this app is too old (`update_required` or close code 4002).
+    /// Reconnecting has stopped; it resumes only on the next `connect(...)`.
+    var onUpdateRequired: ((String) -> Void)?
 
     private(set) var isOpen = false
+    private(set) var updateRequiredMessage: String?
 
     private let events: WebSocketEvents
     private let session: URLSession
@@ -69,6 +73,7 @@ final class LinkClient {
         self.baseURL = baseURL
         self.token = token
         self.helloName = deviceName
+        updateRequiredMessage = nil
         wantConnected = true
         backoff.reset()
         openSocket()
@@ -131,7 +136,8 @@ final class LinkClient {
         // hello must be the first frame after connect, so it goes out before setOpen(true)
         // (observers of the open state send state.update straight away).
         let hello = HelloData(kind: "mac", name: helloName, app_version: ProtocolConstants.appVersion,
-                              capabilities: ["screen", "audio", "voice", "notify"])
+                              capabilities: ["screen", "audio", "voice", "notify"],
+                              protocolVersion: ProtocolConstants.protocolVersion)
         if let env = Envelope.make("hello", hello) {
             transmit(env, on: t)
         }
@@ -146,6 +152,10 @@ final class LinkClient {
 
     private func handleClose(_ t: URLSessionTask) {
         guard t === task else { return }
+        if let ws = t as? URLSessionWebSocketTask, ws.closeCode.rawValue == ProtocolConstants.closeUpdateRequired {
+            requireUpdate(updateRequiredMessage ?? ProtocolConstants.defaultUpdateMessage)
+            return
+        }
         if let http = t.response as? HTTPURLResponse, http.statusCode == 401 || http.statusCode == 403 {
             wantConnected = false
             tearDown()
@@ -158,6 +168,17 @@ final class LinkClient {
         pingTimer = nil
         setOpen(false)
         scheduleReconnect()
+    }
+
+    /// Stops for good (no reconnects) and reports once.
+    private func requireUpdate(_ message: String) {
+        let first = updateRequiredMessage == nil
+        if first { updateRequiredMessage = message }
+        wantConnected = false
+        reconnectWork?.cancel()
+        reconnectWork = nil
+        tearDown()
+        if first { onUpdateRequired?(message) }
     }
 
     private func scheduleReconnect() {
@@ -257,6 +278,11 @@ final class LinkClient {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed == "pong" || trimmed == "ping" { return }
         guard let env = Envelope.parse(trimmed) else { return }
-        onEvent?(IncomingEvent(env))
+        let event = IncomingEvent(env)
+        if case .updateRequired(let u) = event {
+            requireUpdate(u.displayMessage)
+            return
+        }
+        onEvent?(event)
     }
 }

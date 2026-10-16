@@ -22,6 +22,7 @@ final class AppController: NSObject, NSWindowDelegate {
     private var watchItem: NSMenuItem?
     private var screenItem: NSMenuItem?
     private var connectionItem: NSMenuItem?
+    private var updateItem: NSMenuItem?
 
     private var onboardingWindow: NSWindow?
     private var pairingWindow: NSWindow?
@@ -86,6 +87,7 @@ final class AppController: NSObject, NSWindowDelegate {
 
     private func connect() {
         guard let base = prefs.baseURL, let token = Keychain.get() else { return }
+        clearUpdateRequired()
         link.connect(baseURL: base, token: token, deviceName: Host.current().localizedName ?? "Mac")
     }
 
@@ -145,7 +147,11 @@ final class AppController: NSObject, NSWindowDelegate {
             guard let self else { return }
             self.avatar.connected = open
             self.overlay.connected = open
-            self.connectionItem?.title = open ? "Connected to brain" : "Connecting…"
+            if self.link.updateRequiredMessage != nil {
+                self.connectionItem?.title = "Update required"
+            } else {
+                self.connectionItem?.title = open ? "Connected to brain" : "Connecting…"
+            }
             if open { self.activity.resend() }
         }
         link.onUnauthorized = { [weak self] in
@@ -154,6 +160,22 @@ final class AppController: NSObject, NSWindowDelegate {
             Keychain.delete()
             self.showOnboarding()
         }
+        link.onUpdateRequired = { [weak self] message in self?.showUpdateRequired(message) }
+    }
+
+    /// The brain no longer supports this app's protocol. The link has stopped reconnecting.
+    private func showUpdateRequired(_ message: String) {
+        overlay.showUpdateRequired(message)
+        connectionItem?.title = "Update required"
+        updateItem?.isHidden = false
+        avatar.connected = false
+        overlay.connected = false
+        avatar.setEmotion(.sad, intensity: 0.5, hold: 4)
+    }
+
+    private func clearUpdateRequired() {
+        overlay.clearUpdateRequired()
+        updateItem?.isHidden = true
     }
 
     private func wireSenses() {
@@ -199,6 +221,9 @@ final class AppController: NSObject, NSWindowDelegate {
             if let detail = a.detail, !detail.isEmpty { overlay.showToast(detail) }
         case .captureRequest(let r):
             handleCaptureRequest(reason: r.reason ?? "asked")
+        case .updateRequired(let u):
+            // LinkClient intercepts this before onEvent; handled here too so the switch stays exhaustive.
+            showUpdateRequired(u.displayMessage)
         case .error(let e):
             NSLog("Pixie brain error: %@ %@", e.code ?? "?", e.message ?? "")
             if e.code == "rate_limited" {
@@ -375,6 +400,10 @@ final class AppController: NSObject, NSWindowDelegate {
         conn.isEnabled = false
         menu.addItem(conn)
         connectionItem = conn
+        let upd = makeItem("Update Pixie", #selector(menuUpdate))
+        upd.isHidden = true
+        menu.addItem(upd)
+        updateItem = upd
         menu.addItem(.separator())
 
         menu.addItem(makeItem("Talk to Pixie", #selector(menuTalk)))
@@ -423,6 +452,15 @@ final class AppController: NSObject, NSWindowDelegate {
     }
 
     @objc private func menuQuit() { NSApp.terminate(nil) }
+
+    @objc private func menuUpdate() {
+        let alert = NSAlert()
+        alert.messageText = "Update Pixie"
+        alert.informativeText = link.updateRequiredMessage ?? overlay.updateMessage ?? ProtocolConstants.defaultUpdateMessage
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        _ = alert.runModal()
+    }
 
     // MARK: Windows
 

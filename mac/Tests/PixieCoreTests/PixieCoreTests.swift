@@ -90,6 +90,28 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(IncomingEvent(env), .unknown(type: "future.thing"))
     }
 
+    func testUpdateRequiredDecoding() {
+        let json = #"{"v":1,"id":"brn_1","ts":1,"type":"update_required","data":{"min_protocol":2,"latest_protocol":3,"message":"Please update Pixie to keep using it."}}"#
+        let env = Envelope.parse(json)!
+        guard case .updateRequired(let u) = IncomingEvent(env) else { return XCTFail("not update_required") }
+        XCTAssertEqual(u.min_protocol, 2)
+        XCTAssertEqual(u.latest_protocol, 3)
+        XCTAssertEqual(u.displayMessage, "Please update Pixie to keep using it.")
+
+        // Missing data still yields the event with the default wording.
+        let bare = Envelope.parse(#"{"v":1,"id":"brn_2","ts":1,"type":"update_required"}"#)!
+        guard case .updateRequired(let b) = IncomingEvent(bare) else { return XCTFail("not update_required") }
+        XCTAssertNil(b.min_protocol)
+        XCTAssertEqual(b.displayMessage, ProtocolConstants.defaultUpdateMessage)
+    }
+
+    func testHelloEncodesProtocol() {
+        let env = Envelope.make("hello", HelloData(name: "Mac"))!
+        XCTAssertEqual(env.data["protocol"]?.doubleValue, Double(ProtocolConstants.protocolVersion))
+        XCTAssertEqual(env.data["app_version"]?.stringValue, ProtocolConstants.appVersion)
+        XCTAssertNil(env.data["protocolVersion"])
+    }
+
     func testFeedbackEncodingOmitsNil() {
         let env = Envelope.make("user.feedback", UserFeedbackData(proposal_id: "prp_1", verdict: "reject"))!
         XCTAssertNil(env.data["edited_text"])

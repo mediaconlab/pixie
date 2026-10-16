@@ -11,7 +11,7 @@ import type {
   Performance, PhoneCallData, PhoneMessageData, ProposalKind, ProposeData, ScreenFrameData, StateUpdateData,
   UserFeedbackData, UserSayData,
 } from "../protocol";
-import { envelope, perf, sanitizePerformance } from "../protocol";
+import { MIN_PROTOCOL, PROTOCOL_VERSION, envelope, perf, sanitizePerformance } from "../protocol";
 import { clamp, newId, truncate } from "../util";
 import {
   type Autonomy, type DecisionRow, type Verdict, DIGEST_INTERVAL_MS, PROPOSAL_TTL_MS, decideTier, digestDue, isFocused, parseYesNo, patternKey,
@@ -223,6 +223,8 @@ export class BrainCore {
       persona: { name: this.persona.name },
       mood: moodForWire(this.mood()),
       devices,
+      protocol: PROTOCOL_VERSION,
+      min_protocol: MIN_PROTOCOL,
     });
   }
 

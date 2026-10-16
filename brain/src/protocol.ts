@@ -4,7 +4,13 @@
  */
 import { clamp, stripEmoji, truncate } from "./util";
 
+/** Wire protocol number. Additive changes keep it; breaking changes bump it (PROTOCOL.md §0). */
 export const PROTOCOL_VERSION = 1;
+/** Oldest device protocol the brain still serves. Raise only after apps that speak the newer one have shipped. */
+export const MIN_PROTOCOL = 1;
+/** WebSocket close code sent after `update_required`. */
+export const CLOSE_UPDATE_REQUIRED = 4002;
+export const UPDATE_REQUIRED_MESSAGE = "Please update Pixie to keep using it.";
 export const BRAIN_VERSION = "1.0.0";
 export const MAX_FRAME_BYTES = 1024 * 1024;
 
@@ -55,6 +61,8 @@ export interface Envelope<T = unknown> {
 export interface HelloData {
   kind: DeviceKind;
   name: string;
+  /** Device protocol number; a missing value is treated as 1 (apps that predate the field). */
+  protocol: number;
   app_version?: string;
   capabilities?: string[];
 }
@@ -138,6 +146,15 @@ export interface ProposeData {
 
 export type ErrorCode = "rate_limited" | "bad_event" | "model_error";
 
+/** True when a device speaking `protocol` is too old for this brain. */
+export function needsUpdate(protocol: number): boolean {
+  return protocol < MIN_PROTOCOL;
+}
+
+export function updateRequiredData(): { min_protocol: number; latest_protocol: number; message: string } {
+  return { min_protocol: MIN_PROTOCOL, latest_protocol: PROTOCOL_VERSION, message: UPDATE_REQUIRED_MESSAGE };
+}
+
 // ---- Parsing -----------------------------------------------------------------
 
 export type ParseResult =
@@ -186,6 +203,7 @@ export function parseEnvelope(raw: string | ArrayBuffer, now = Date.now()): Pars
           data: {
             kind,
             name: str(d.name, 100),
+            protocol: typeof d.protocol === "number" && Number.isInteger(d.protocol) && d.protocol > 0 ? d.protocol : 1,
             app_version: str(d.app_version, 40),
             capabilities: Array.isArray(d.capabilities)
               ? d.capabilities.filter((c): c is string => typeof c === "string").slice(0, 32)

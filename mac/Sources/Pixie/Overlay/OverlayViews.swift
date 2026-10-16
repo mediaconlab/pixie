@@ -87,6 +87,11 @@ struct CardsColumn: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if let message = overlay.updateMessage {
+                UpdateRequiredCard(message: message)
+                    .interactiveRegion()
+                    .transition(.opacity)
+            }
             if let toast = overlay.toast {
                 ToastView(text: toast)
                     .interactiveRegion()
@@ -171,6 +176,30 @@ struct ToastView: View {
         .background(Capsule().fill(Color(nsColor: .windowBackgroundColor).opacity(0.97)))
         .shadow(color: Color.black.opacity(0.15), radius: 6, y: 2)
         .frame(maxWidth: 320)
+    }
+}
+
+// MARK: - Update required (update_required / close 4002)
+
+struct UpdateRequiredCard: View {
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Color(red: 0.95, green: 0.33, blue: 0.36))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Update Pixie")
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                Text(message)
+                    .font(.system(size: 12, design: .rounded))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(width: 300)
+        .cardStyle()
     }
 }
 

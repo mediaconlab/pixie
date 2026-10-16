@@ -7,7 +7,7 @@ import { generateToken, hashToken } from "./auth";
 import { createDevice, createOwner, createUser, deleteDevice, getOwnerId, listDevices, listUserIds, type DeviceWithUser } from "./db";
 import type { Env } from "./env";
 import { consumeCode, isClaimRateLimited, pairLink, recordFailedClaim, startPairing } from "./pairing";
-import { BRAIN_VERSION, type DeviceKind } from "./protocol";
+import { BRAIN_VERSION, MIN_PROTOCOL, PROTOCOL_VERSION, type DeviceKind } from "./protocol";
 import { newId } from "./util";
 
 export { UserBrain } from "./brain/UserBrain";
@@ -82,7 +82,7 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext): Pro
 
   if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
 
-  if (path === "/health" && method === "GET") return json({ ok: true, version: BRAIN_VERSION });
+  if (path === "/health" && method === "GET") return json({ ok: true, version: BRAIN_VERSION, protocol: PROTOCOL_VERSION, min_protocol: MIN_PROTOCOL });
 
   if (path === "/v1/register" && method === "POST") {
     const body = await readJson(req);

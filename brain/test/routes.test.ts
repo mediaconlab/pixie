@@ -44,7 +44,7 @@ beforeEach(() => {
 describe("REST", () => {
   it("health", async () => {
     const r = await call("/health");
-    expect(await r.json()).toEqual({ ok: true, version: "1.0.0" });
+    expect(await r.json()).toEqual({ ok: true, version: "1.0.0", protocol: 1, min_protocol: 1 });
     expect(r.headers.get("access-control-allow-origin")).toBe("*");
   });
 

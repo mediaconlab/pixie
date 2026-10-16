@@ -6,7 +6,7 @@ import { DurableObject } from "cloudflare:workers";
 import { WorkersAiBrainpower, type Brainpower } from "../ai";
 import { listDevices, touchDevice } from "../db";
 import type { Env } from "../env";
-import { type DeviceKind, envelope, parseEnvelope } from "../protocol";
+import { CLOSE_UPDATE_REQUIRED, type DeviceKind, envelope, needsUpdate, parseEnvelope, updateRequiredData } from "../protocol";
 import { BrainCore, type DeviceConn } from "./core";
 
 interface Attachment {
@@ -151,6 +151,16 @@ export class UserBrain extends DurableObject<Env> {
     const parsed = parseEnvelope(message, now);
     if (!parsed.ok) {
       ws.send(envelope("error", { code: parsed.code, message: parsed.message }));
+      return;
+    }
+    // Too-old app: tell it to update and close with 4002 so it stops reconnecting (PROTOCOL.md §0).
+    if (parsed.event.type === "hello" && needsUpdate(parsed.event.data.protocol)) {
+      ws.send(envelope("update_required", updateRequiredData()));
+      try {
+        ws.close(CLOSE_UPDATE_REQUIRED, "update required");
+      } catch {
+        /* already closed */
+      }
       return;
     }
     // The token's device kind is authoritative; ignore hello.kind mismatches.

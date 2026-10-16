@@ -362,8 +362,8 @@ private fun StatusCard(onUnpair: () -> Unit) {
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilledTonalButton(onClick = {
+                    PixieLink.reconnectNow(userInitiated = true)
                     LinkService.start(context)
-                    PixieLink.reconnectNow()
                 }) { Text("Reconnect") }
                 if (confirm) {
                     Button(onClick = {

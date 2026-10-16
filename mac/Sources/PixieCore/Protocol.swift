@@ -3,7 +3,13 @@ import Foundation
 // MARK: - Envelope (PROTOCOL.md §2)
 
 public enum ProtocolConstants {
+    /// Envelope framing version (`v`).
     public static let version = 1
+    /// Wire contract version sent as `hello.protocol` (PROTOCOL.md §0).
+    public static let protocolVersion = 1
+    /// WebSocket close code the brain uses after `update_required`.
+    public static let closeUpdateRequired = 4002
+    public static let defaultUpdateMessage = "Please update Pixie to keep using it."
     public static let appVersion = "1.0.0"
     public static let maxFrameBytes = 1_048_576
     public static let pingInterval: TimeInterval = 30
@@ -140,13 +146,21 @@ public enum Activity: String, Codable, CaseIterable, Sendable, TolerantStringEnu
 public struct HelloData: Codable, Equatable, Sendable {
     public var kind: String
     public var name: String
+    /// Encoded as `"protocol"` (a Swift keyword, hence the different property name).
+    public var protocolVersion: Int
     public var app_version: String
     public var capabilities: [String]
-    public init(kind: String = "mac", name: String, app_version: String = ProtocolConstants.appVersion, capabilities: [String] = ["screen", "audio", "voice", "notify"]) {
+    public init(kind: String = "mac", name: String, app_version: String = ProtocolConstants.appVersion, capabilities: [String] = ["screen", "audio", "voice", "notify"], protocolVersion: Int = ProtocolConstants.protocolVersion) {
         self.kind = kind
         self.name = name
+        self.protocolVersion = protocolVersion
         self.app_version = app_version
         self.capabilities = capabilities
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case kind, name, app_version, capabilities
+        case protocolVersion = "protocol"
     }
 }
 
@@ -387,6 +401,40 @@ public struct ErrorData: Codable, Equatable, Sendable {
     public var message: String?
 }
 
+/// `update_required` (PROTOCOL.md §0): this app's protocol is older than the brain's `min_protocol`.
+public struct UpdateRequiredData: Codable, Equatable, Sendable {
+    public var min_protocol: Int?
+    public var latest_protocol: Int?
+    public var message: String?
+
+    public init(min_protocol: Int? = nil, latest_protocol: Int? = nil, message: String? = nil) {
+        self.min_protocol = min_protocol
+        self.latest_protocol = latest_protocol
+        self.message = message
+    }
+
+    enum CodingKeys: String, CodingKey { case min_protocol, latest_protocol, message }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        min_protocol = UpdateRequiredData.int(c, .min_protocol)
+        latest_protocol = UpdateRequiredData.int(c, .latest_protocol)
+        message = try? c.decode(String.self, forKey: .message)
+    }
+
+    private static func int(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> Int? {
+        if let i = try? c.decode(Int.self, forKey: key) { return i }
+        if let d = try? c.decode(Double.self, forKey: key) { return Int(d) }
+        return nil
+    }
+
+    /// The text to show the user (the brain's message, or the default wording).
+    public var displayMessage: String {
+        let m = (message ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return m.isEmpty ? ProtocolConstants.defaultUpdateMessage : m
+    }
+}
+
 /// Typed view of a brain → device envelope. `data` is decoded only for the matching type.
 public enum IncomingEvent: Equatable, Sendable {
     case welcome(WelcomeData)
@@ -398,6 +446,7 @@ public enum IncomingEvent: Equatable, Sendable {
     case auto(AutoData)
     case captureRequest(CaptureRequestData)
     case error(ErrorData)
+    case updateRequired(UpdateRequiredData)
     case unknown(type: String)
 
     public init(_ env: Envelope) {
@@ -420,6 +469,8 @@ public enum IncomingEvent: Equatable, Sendable {
             self = .captureRequest(env.decodeData(CaptureRequestData.self) ?? CaptureRequestData(reason: "asked"))
         case "error":
             self = .error(env.decodeData(ErrorData.self) ?? ErrorData(code: nil, message: nil))
+        case "update_required":
+            self = .updateRequired(env.decodeData(UpdateRequiredData.self) ?? UpdateRequiredData())
         default:
             self = .unknown(type: env.type)
         }

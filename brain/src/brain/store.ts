@@ -7,7 +7,29 @@ export interface SqlLike {
   exec<T extends Record<string, SqlValue>>(query: string, ...bindings: unknown[]): { toArray(): T[] };
 }
 
-export const SCHEMA: string[] = [
+/**
+ * Versioned schema migrations for the per-user Durable Object database.
+ *
+ * RULES
+ * - Never edit or reorder a migration that has shipped. Existing users' databases already ran it.
+ * - To change the schema, APPEND a new migration ({ version: N + 1, statements: [...] }).
+ * - Versions are 1, 2, 3, ... with no gaps. The applied version lives in the single-row
+ *   `schema_version` table; `migrate` runs every migration above it, in order, recording the
+ *   version after each one.
+ * - Migration 1 is the original schema, all `IF NOT EXISTS`, so databases created before
+ *   versioning (tables present, no `schema_version`) run it harmlessly and land on version 1.
+ *
+ * Migrations are applied sequentially (synchronously, in the DO constructor) and the version is
+ * recorded after each one, so a crash between migrations resumes at the next one on restart.
+ * Write each migration so that re-running it after a partial failure is safe (IF NOT EXISTS etc.).
+ */
+export interface Migration {
+  version: number;
+  statements: readonly string[];
+}
+
+/** Migration 1: the original schema, exactly as it shipped before versioning. Never edit. */
+const V1_SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS memories (
      id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,8 +110,38 @@ export const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS model_calls (ts INTEGER NOT NULL)`,
 ];
 
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, statements: [...V1_SCHEMA] },
+  // Append new migrations here: { version: 2, statements: ["ALTER TABLE ..."] },
+];
+
+export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
+
+/** Current applied schema version (0 for a fresh or pre-versioning database). */
+export function schemaVersion(sql: SqlLike): number {
+  sql.exec(`CREATE TABLE IF NOT EXISTS schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)`);
+  const rows = sql.exec<{ version: number }>("SELECT version FROM schema_version WHERE id = 1").toArray();
+  return rows[0] ? Number(rows[0].version) : 0;
+}
+
+/** Apply every migration newer than the recorded version, in order. Returns the final version. */
+export function migrate(sql: SqlLike, migrations: readonly Migration[] = MIGRATIONS): number {
+  let current = schemaVersion(sql);
+  for (const m of [...migrations].sort((a, b) => a.version - b.version)) {
+    if (m.version <= current) continue;
+    for (const s of m.statements) sql.exec(s);
+    sql.exec(
+      "INSERT INTO schema_version (id, version) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET version = excluded.version",
+      m.version,
+    );
+    current = m.version;
+  }
+  return current;
+}
+
+/** Back-compat name used by BrainCore. */
 export function initSchema(sql: SqlLike): void {
-  for (const s of SCHEMA) sql.exec(s);
+  migrate(sql);
 }
 
 export class KV {
