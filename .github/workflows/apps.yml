@@ -18,8 +18,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Swift version
         run: swift --version
+      - name: Build (errors surfaced as annotations)
+        run: |
+          set -o pipefail
+          swift build -c release --arch arm64 --package-path mac 2>&1 | tee build.log || {
+            grep -E "error:" build.log | sort -u | head -40 | while IFS= read -r l; do
+              f=$(echo "$l" | sed -E 's#^.*/(mac/[^:]+):([0-9]+):.*#\1#'); n=$(echo "$l" | sed -E 's#^.*/mac/[^:]+:([0-9]+):.*#\1#')
+              echo "::error file=$f,line=$n::$(echo "$l" | sed -E 's#^.*error: ##')"
+            done; exit 1; }
       - name: Unit tests (PixieCore)
-        run: swift test --package-path mac
+        run: |
+          set -o pipefail
+          swift test --package-path mac 2>&1 | tee test.log || {
+            grep -E "error:|failed" test.log | sort -u | head -40 | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
       - name: Build and package Pixie.app (arm64)
         run: bash mac/scripts/package.sh
       - uses: actions/upload-artifact@v4
