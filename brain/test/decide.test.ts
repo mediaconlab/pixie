@@ -127,10 +127,10 @@ describe("decideTier", () => {
 describe("routeNotification", () => {
   const base = { urgency: 0.3, activity: "browsing" as const, focusMode: false, inCall: false, digestRule: false };
   it("urgent interrupts", () => expect(routeNotification({ ...base, urgency: 0.6 })).toBe("interrupt"));
-  it("idle interrupts even if low urgency", () => expect(routeNotification({ ...base, activity: "idle" })).toBe("interrupt"));
-  it("low urgency while busy is digested", () => expect(routeNotification(base)).toBe("digest"));
+  it("idle shows low urgency as a card", () => expect(routeNotification({ ...base, activity: "idle" })).toBe("card"));
+  it("low urgency while busy is shown as a silent card", () => expect(routeNotification(base)).toBe("card"));
   it("meeting holds low urgency", () => expect(routeNotification({ ...base, activity: "meeting" })).toBe("digest"));
-  it("coding holds low urgency", () => expect(routeNotification({ ...base, activity: "coding" })).toBe("digest"));
+  it("coding still shows low urgency as a card", () => expect(routeNotification({ ...base, activity: "coding" })).toBe("card"));
   it("focus mode while idle still digests low urgency", () => expect(routeNotification({ ...base, activity: "idle", focusMode: true })).toBe("digest"));
   it("in call: only very urgent breaks through", () => {
     expect(routeNotification({ ...base, inCall: true, urgency: 0.7 })).toBe("digest");

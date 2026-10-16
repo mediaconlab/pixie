@@ -792,11 +792,14 @@ export class BrainCore {
     const digestRule = rules.has(senderKey) || (!!d.conversation && rules.has(nameKey(d.conversation)));
     const route = routeNotification({ urgency, activity: st.activity, focusMode: st.focus_mode, inCall: st.inCall, digestRule });
 
-    if (route === "interrupt") {
+    if (route === "interrupt" || route === "card") {
       this.sendTo(this.online("mac"), "bot.notice", {
         kind: "message", from: d.from, preview: truncate(d.preview, 300), app: d.app, urgency: round2(urgency), summary: cls.summary, interrupt: true,
       });
-      if (!st.inCall) {
+      if (route === "card") {
+        // Ordinary message while the user is busy: show it, but don't talk over them.
+        this.perform(perf({ say: `${d.from}: ${cls.summary}`, emotion: "curious", intensity: 0.35, gesture: "none", gaze: "phone", speak: false }, o.eventId));
+      } else if (!st.inCall) {
         const urgent = urgency >= 0.75;
         this.perform(
           perf({

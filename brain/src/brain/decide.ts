@@ -161,7 +161,8 @@ export interface NotificationContext {
   digestRule: boolean;
 }
 
-export type Route = "interrupt" | "digest";
+/** interrupt = card + spoken alert; card = card + silent bubble; digest = held for the next digest. */
+export type Route = "interrupt" | "card" | "digest";
 
 /** Urgency at/above which a message always interrupts. */
 export const INTERRUPT_URGENCY = 0.6;
@@ -174,14 +175,17 @@ export function isFocused(activity: Activity, focusMode: boolean): boolean {
 }
 
 /**
- * Spec: urgency >= 0.6 or activity idle -> interrupt; else digest.
- * Additions: during a phone call or for senders with a digest rule, only >= 0.85 interrupts.
+ * Every message is shown as it arrives unless the user is in a meeting, focus mode or a call:
+ * - digest rule or active call: only >= 0.85 breaks through, the rest waits for the digest
+ * - urgency >= 0.6: interrupt (card + Pixie says it out loud)
+ * - meeting / focus mode: held for the digest
+ * - otherwise (idle, coding, browsing...): a silent card
  */
 export function routeNotification(c: NotificationContext): Route {
   if (c.digestRule || c.inCall) return c.urgency >= BREAKTHROUGH_URGENCY ? "interrupt" : "digest";
   if (c.urgency >= INTERRUPT_URGENCY) return "interrupt";
-  if (c.activity === "idle" && !c.focusMode) return "interrupt";
-  return "digest";
+  if (isFocused(c.activity, c.focusMode)) return "digest";
+  return "card";
 }
 
 export const DIGEST_INTERVAL_MS = 15 * 60 * 1000;

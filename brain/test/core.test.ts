@@ -233,12 +233,24 @@ describe("phone.message routing", () => {
     expect(h.of("bot.perform")).toHaveLength(1);
   });
 
-  it("low urgency while browsing → digest, sent after 15 min via alarm", async () => {
+  it("low urgency while browsing → silent card right away (no speech)", async () => {
     routedAi(h, { urgency: 0.1, expects: false });
     await h.send("mac1", "mac", "state.update", { activity: "browsing" });
     await h.send("and1", "android", "phone.message", msg());
+    const n = h.of("bot.notice");
+    expect(n).toHaveLength(1);
+    expect(n[0]!.data).toMatchObject({ kind: "message", from: "Rahul", interrupt: true });
+    const p = h.of("bot.perform").at(-1)!;
+    expect(p.data.speak).toBe(false);
+    expect(h.of("bot.digest")).toHaveLength(0);
+  });
+
+  it("digest-rule sender while browsing → digest, sent after 15 min via alarm", async () => {
+    routedAi(h, { urgency: 0.1, expects: false });
+    (h.core as unknown as { addDigestRule(t: string): void }).addDigestRule("Rahul");
+    await h.send("mac1", "mac", "state.update", { activity: "browsing" });
+    await h.send("and1", "android", "phone.message", msg());
     expect(h.of("bot.notice")).toHaveLength(0);
-    expect(h.alarm).not.toBeNull();
     expect(h.alarm).toBe(h.now + 15 * 60_000);
     h.advance(10 * 60_000);
     await h.core.alarm();
@@ -423,6 +435,7 @@ describe("model actions & tiers", () => {
 describe("alarm scheduling", () => {
   it("does not spin when the digest is overdue but the Mac is offline; delivers on hello", async () => {
     routedAi(h, { urgency: 0.1, expects: false });
+    (h.core as unknown as { addDigestRule(t: string): void }).addDigestRule("Rahul");
     await h.send("mac1", "mac", "state.update", { activity: "browsing" });
     await h.send("and1", "android", "phone.message", { app: "whatsapp", from: "Rahul", conversation: null, preview: "lol", is_group: false, key: "k", replyable: true });
     h.disconnect("mac1");
