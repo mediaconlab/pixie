@@ -119,11 +119,11 @@ public enum Gaze: String, Codable, CaseIterable, Sendable, TolerantStringEnum {
     }
 }
 
-public enum VoicePace: String, Codable, CaseIterable, Sendable, TolerantStringEnum {
+public enum PixieVoicePace: String, Codable, CaseIterable, Sendable, TolerantStringEnum {
     case slow, normal, fast
-    public static var fallback: VoicePace { .normal }
+    public static var fallback: PixieVoicePace { .normal }
     public init(from decoder: Decoder) throws {
-        self = VoicePace.tolerant(try? decoder.singleValueContainer().decode(String.self))
+        self = PixieVoicePace.tolerant(try? decoder.singleValueContainer().decode(String.self))
     }
 }
 
@@ -235,17 +235,17 @@ public struct ExecResultData: Codable, Equatable, Sendable {
 
 // MARK: - Brain → device payloads
 
-public struct VoiceSpec: Codable, Equatable, Sendable {
-    public var pace: VoicePace
+public struct PixieVoiceSpec: Codable, Equatable, Sendable {
+    public var pace: PixieVoicePace
     public var pitch: Int
-    public init(pace: VoicePace = .normal, pitch: Int = 0) {
+    public init(pace: PixieVoicePace = .normal, pitch: Int = 0) {
         self.pace = pace
         self.pitch = pitch
     }
     enum CodingKeys: String, CodingKey { case pace, pitch }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        pace = (try? c.decode(VoicePace.self, forKey: .pace)) ?? .normal
+        pace = (try? c.decode(PixieVoicePace.self, forKey: .pace)) ?? .normal
         if let i = try? c.decode(Int.self, forKey: .pitch) {
             pitch = i
         } else if let d = try? c.decode(Double.self, forKey: .pitch) {
@@ -263,11 +263,11 @@ public struct Performance: Codable, Equatable, Sendable {
     public var intensity: Double
     public var gesture: GestureKind
     public var gaze: Gaze
-    public var voice: VoiceSpec
+    public var voice: PixieVoiceSpec
     public var speak: Bool
     public var reply_to: String?
 
-    public init(say: String = "", emotion: Emotion = .neutral, intensity: Double = 0.5, gesture: GestureKind = GestureKind.fallback, gaze: Gaze = .user, voice: VoiceSpec = VoiceSpec(), speak: Bool = false, reply_to: String? = nil) {
+    public init(say: String = "", emotion: Emotion = .neutral, intensity: Double = 0.5, gesture: GestureKind = GestureKind.fallback, gaze: Gaze = .user, voice: PixieVoiceSpec = PixieVoiceSpec(), speak: Bool = false, reply_to: String? = nil) {
         self.say = say
         self.emotion = emotion
         self.intensity = intensity
@@ -288,7 +288,7 @@ public struct Performance: Codable, Equatable, Sendable {
         intensity = max(0, min(1, i))
         gesture = (try? c.decode(GestureKind.self, forKey: .gesture)) ?? GestureKind.fallback
         gaze = (try? c.decode(Gaze.self, forKey: .gaze)) ?? .user
-        voice = (try? c.decode(VoiceSpec.self, forKey: .voice)) ?? VoiceSpec()
+        voice = (try? c.decode(PixieVoiceSpec.self, forKey: .voice)) ?? PixieVoiceSpec()
         speak = (try? c.decode(Bool.self, forKey: .speak)) ?? false
         reply_to = try? c.decode(String.self, forKey: .reply_to)
     }

@@ -221,7 +221,7 @@ final class AppController: NSObject, NSWindowDelegate {
     /// Pixie talking on its own (offline / permission hints) without the brain.
     private func localSay(_ text: String, emotion: Emotion) {
         act(Performance(say: text, emotion: emotion, intensity: 0.6, gesture: GestureKind.none, gaze: .user,
-                            voice: VoiceSpec(), speak: false))
+                            voice: PixieVoiceSpec(), speak: false))
     }
 
     /// Only `reminder` can be executed on the Mac. The brain sends `bot.execute` only after an approve tap.
@@ -235,7 +235,7 @@ final class AppController: NSObject, NSWindowDelegate {
                 guard let self else { return }
                 self.avatar.wake()
                 self.act(Performance(say: "⏰ " + text, emotion: .excited, intensity: 0.8, gesture: .jump,
-                                         gaze: .user, voice: VoiceSpec(), speak: true))
+                                         gaze: .user, voice: PixieVoiceSpec(), speak: true))
             }
         }
     }
@@ -464,7 +464,7 @@ final class AppController: NSObject, NSWindowDelegate {
         connect()
         let name = prefs.userName.isEmpty ? "friend" : prefs.userName
         act(Performance(say: "Yay! Nice to meet you, \(name)! Click me anytime to chat ✨", emotion: .excited,
-                            intensity: 0.9, gesture: .wave, gaze: .user, voice: VoiceSpec(pace: .normal, pitch: 1),
+                            intensity: 0.9, gesture: .wave, gaze: .user, voice: PixieVoiceSpec(pace: .normal, pitch: 1),
                             speak: true))
     }
 

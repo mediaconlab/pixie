@@ -57,7 +57,7 @@ final class VoiceOut {
 
     var isSpeaking: Bool { synth.isSpeaking }
 
-    func speak(_ text: String, voice spec: VoiceSpec) {
+    func speak(_ text: String, voice spec: PixieVoiceSpec) {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
         stop()

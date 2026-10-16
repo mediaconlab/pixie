@@ -81,7 +81,7 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(p.gesture, GestureKind.none)
         XCTAssertEqual(p.gaze, Gaze.user)
         XCTAssertEqual(p.intensity, 1)
-        XCTAssertEqual(p.voice.pace, VoicePace.normal)
+        XCTAssertEqual(p.voice.pace, PixieVoicePace.normal)
         XCTAssertEqual(p.voice.pitch, 2)
     }
 
