@@ -158,3 +158,59 @@ The brain env var `AUTONOMY` picks the policy: `guarded` is the table below; `fu
 
 Devices must never execute a `bot.execute` they did not receive after an approval tap on *some* device, and the
 Android app must never send a WhatsApp reply without a matching `bot.execute`.
+
+---
+
+## 4. Pet life (additive, protocol stays 1)
+
+Design: the Mac runs the **body** (a 1 Hz deterministic tick: sleep pressure, energy, needs, mood, emotion,
+attention ladder, the behaviour picker and *when* to speak). The brain owns the **relationship and the voice**:
+personality traits, bond, familiarity, learned rhythm, preferences from instructions, the thought reservoir
+(gossip / world / callbacks), weather and calendar context, and writing every spoken line. The LLM never decides
+state or timing.
+
+### 4.1 Device → brain
+
+| type | sender | data |
+| --- | --- | --- |
+| `location.update` | android (preferred), mac (fallback) | `{ "lat": 28.46, "lon": 77.03, "accuracy_m": 500, "source": "phone"\|"mac" }` — **rounded to 2 decimals before sending** (~1 km). Send on start and when it moves > 2 km, at most every 15 min. |
+| `signals.update` | mac | `{ "mic_in_use": false, "camera_in_use": false, "music": { "app": "Spotify", "playing": true } \| null, "calendar_busy_now": false, "next_busy_in_min": 42 \| null, "typing_rate": "none"\|"low"\|"high", "app_switch_rate": "low"\|"high", "screen_locked": false }` — send on change only. Calendar = busy/free times only, never titles. |
+| `pet.state` | mac | `{ "phase": "awake"\|"napping"\|"sleepy"\|"asleep"\|"waking", "sleep_pressure": 0.42, "energy": 0.61, "social": 0.3, "boredom": 0.2, "snack": 0.5, "mood": { "p": 0.2, "a": 0.1, "d": 0.0 }, "emotion": "curious", "ladder": 0 }` — on phase / ladder / emotion change, at most once per minute, plus every 10 min. |
+| `pet.event` | mac | `{ "kind": "petted"\|"poked"\|"fed"\|"carried"\|"bubble_replied"\|"bubble_dismissed"\|"bubble_ignored"\|"woke"\|"fell_asleep"\|"ate"\|"sulked"\|"made_up"\|"reunion", "intent"?: "...", "thought_id"?: "..." }` |
+| `pet.speak` | mac | Ask the brain to voice a line now: `{ "intent": "greet_morning"\|"playful_bid"\|"sulk_line"\|"rant"\|"gossip"\|"world"\|"callback"\|"sleepy"\|"weather"\|"reunion"\|"late_night"\|"reaction", "thought_id"?: "th_...", "hint"?: "it started raining" }`. The brain answers with `bot.perform` (`reply_to` = this event id). It may answer with `say: ""` to decline (caps, privacy, nothing worth saying). |
+| `phone.self_reply` | android | `{ "key": "<notification key>", "conversation": "Mom" \| "Family", "is_group": false }` — the user's own message appeared in a conversation notification. **No text.** |
+
+### 4.2 Brain → device
+
+| type | to | data |
+| --- | --- | --- |
+| `pet.profile` | mac (on `hello` and on change) | `{ "traits": { "curiosity": 0.6, "chattiness": 0.5, "agreeableness": 0.7, "sensitivity": 0.4, "sass": 0.5, "clinginess": 0.4 }, "bond": 34, "familiarity": 0.12, "day_mood": 0.05, "first_week": true, "talk_scale": 0.5, "less_needy": 0.0, "quiet_until": 0 \| ts, "gossip_enabled": true, "rhythm": { "wake_hour": 8.5, "sleep_hour": 0.5, "lunch_hour": 13.5, "dinner_hour": 20.5 } }` — `talk_scale` multiplies the Mac's speech caps (0.5 in the first week). Hours are local decimal hours. |
+| `env.update` | mac (on `hello`, hourly, and on change) | `{ "weather": { "temp_c": 31, "condition": "clear"\|"cloudy"\|"rain"\|"storm"\|"fog"\|"snow"\|"hot", "is_day": true } \| null, "sunrise": ts, "sunset": ts, "holiday": { "name": "Diwali" } \| null, "weekend": false, "tz": "Asia/Kolkata" }` |
+| `pet.thoughts` | mac | `{ "items": [ { "id": "th_...", "kind": "gossip"\|"world"\|"callback", "salience": 0.0-1.0, "expires_at": ts } ] }` — candidate topics for the reservoir, **no text** (the brain voices them on `pet.speak`). Full list each time (replaces the previous one). |
+| `pet.lines` | mac (on `hello` and after the nightly learner) | `{ "lines": { "<intent>": [ { "text": "mmh… five more minutes", "emotion": "sleepy", "gesture": "none" } ] } }` — pre-written line bank for routine intents (`sleepy`, `waking`, `playful_bid`, `ate`, `weather`, `reaction`) so the Mac can say small things without a live call. |
+| `pet.obey` | mac | `{ "instruction": "quiet"\|"no_gossip"\|"gossip_ok"\|"sleep"\|"less_needy"\|"more_chatty"\|"not_now"\|"stop", "until": ts \| null, "pout": true }` — sent after the brain recognises an instruction in `user.say`. The Mac applies it **immediately** and plays the pout animation only if `pout` is true **and** it is not in a meeting, call, or screen share. |
+| `pet.appraisal` | mac | `{ "event": "praise"\|"scold"\|"tease"\|"affection"\|"apology"\|"thanks"\|"goodbye", "intensity": 0.0-1.0 }` — how the user's latest words feel to Pixie; drives the Mac's emotion engine. |
+
+Voice rule: proactive lines (`pet.speak` answers) come back with `speak: false` (bubble only). Replies to the
+user's own `user.say` with `via: "voice"` are spoken.
+
+Anti-manipulation rules for every voiced line (brain prompt + output filter): no guilt, no claims of suffering,
+no FOMO, never argue with a goodbye, never mention places the user has been, never quote messages.
+
+---
+
+## 5. Smart reply cards (additive)
+
+- `bot.propose` for `whatsapp.reply` gains optional fields:
+  `"why": "You used 7 of your last 8 suggestions for Priya"`,
+  `"exploration": false`,
+  `"quick_actions": [ { "id": "never_contact", "label": "Not for Priya" }, { "id": "never_group", "label": "Not in Family" } ]`.
+- `user.feedback` gains optional `"scope": "contact"\|"group"\|"like_this"` (used with `verdict: "never"`, and
+  by the quick actions which send `verdict: "never"` + the matching scope).
+- REST (Bearer):
+
+| Method + path | Response |
+| --- | --- |
+| `GET /v1/reply-rules` | `{ "rules": [ { "id", "effect": "always"\|"never"\|"only", "subject_type": "contact"\|"group"\|"relation"\|"all_groups"\|"all_dms"\|"all", "subject_label": "Mom", "conditions": { ... } \| null, "expires_at": ts \| null, "source": "chat"\|"button"\|"migrated", "utterance": "always show me reply options for Mom" \| null, "created_at": ts } ] }` (active rules only) |
+| `DELETE /v1/reply-rules/:id` | `{ "ok": true }` |
+| `POST /v1/reply-rules/reset-learning` | `{ "ok": true }` — clears learned reply stats, keeps rules |
