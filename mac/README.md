@@ -53,12 +53,24 @@ deterministic, unit-tested) updates:
 
 Every few seconds (jittered, with a minimum hold) it scores what it could do and picks by weighted chance among the
 top three: breathing, watching the cursor or your work, playing with a ball, chasing the cursor, exploring, peeking,
-napping, yawning and stretching, snacking, looking out of a little window (rain, snow, sunset), fanning itself when it
-is hot, hiding from a storm, bobbing to music, a festive wiggle with a party hat on holidays. Fast typing, calls and
-sleepiness damp play.
+napping, yawning and stretching, snacking, looking out of a little window beside it (rain, snow, storm, night,
+sunset), fanning itself when it is hot, hiding from a storm (paws over its eyes, peeking out, trembling), bobbing to
+music, a festive wiggle with a party hat on holidays. Fast typing, calls and sleepiness damp play.
+
+In free time (you are here and idle, browsing or paused; not in a meeting, call or video, not typing fast, Pixie not
+asleep) there are three leisure behaviours:
+
+- `read_book`: sits with a small open book and round glasses, reading, turning a page now and then. Calm, so it
+  needs only moderate energy; likelier in the evening (with a warm reading-lamp glow), on rainy days and with a curious
+  Pixie.
+- `head_football`: keepy-uppy with a little football on its head, sometimes missing and fetching it back. Energetic
+  play: needs good energy, damped by sleepiness, fast typing and meetings; likelier on weekends and when bored.
+- `bored`: the fallback when boredom is high and nothing else appeals: flopped on the floor with half-lidded eyes,
+  sighing, rolling or tapping a paw, with a faint "…" bubble. It is not an attention bid or a sulk.
 
 **Attention ladder** (only while you are free, gentle by default, slower with `less_needy`): a glance → a hop → one
-gentle spoken bid at a natural break → a short sulk (turned away, puffed up) → at most one theatrical line a day when
+gentle spoken bid at a natural break → a short sulk (turned partly away, arms crossed, cheeks puffed, a little
+cloud and a "hmph") → at most one theatrical line a day when
 things are relaxed → it gives up and naps. Any interaction resets it with a happy make-up wiggle and hearts.
 
 **Talking** is rare. Pixie asks the brain for a line (`pet.speak`) only at natural breaks (an app switch or a short

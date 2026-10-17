@@ -214,6 +214,112 @@ final class PetEngineTests: XCTestCase {
         XCTAssertGreaterThan(e.behaviourScores(idleCtx(), now: now)[.lookOutWindow] ?? 0, 0.5)
     }
 
+    /// The highest-scoring behaviour (ties broken by raw value, like the picker's ranking).
+    func topBehaviour(_ scores: [PetBehaviour: Double]) -> PetBehaviour? {
+        scores.filter { $0.value > 0 }
+            .sorted { a, b in a.value == b.value ? a.key.rawValue < b.key.rawValue : a.value > b.value }
+            .first?.key
+    }
+
+    func testRainyEveningFavoursReadingWhenCalm() {
+        var e = makeEngine()
+        e.state.needs.energy = 0.5
+        e.state.needs.boredom = 0.5
+        let afternoon = Date(timeIntervalSince1970: t0 + 5)        // 15:00 UTC
+        let evening = Date(timeIntervalSince1970: t0 + 4 * 3600)    // 19:00 UTC
+        let plain = e.behaviourScores(idleCtx(30), now: afternoon)[.readBook] ?? 0
+        XCTAssertGreaterThan(plain, 0)
+        e.setEnv(PetEnvData(weather: PetWeather(condition: .rain)), now: evening)
+        let scores = e.behaviourScores(idleCtx(30), now: evening)
+        XCTAssertGreaterThan(scores[.readBook] ?? 0, plain * 2)
+        XCTAssertEqual(topBehaviour(scores), PetBehaviour.readBook)
+        // Calm enough for a tired-ish Pixie, but not an exhausted one.
+        e.state.needs.energy = 0.3
+        XCTAssertGreaterThan(e.behaviourScores(idleCtx(30), now: evening)[.readBook] ?? 0, 0)
+        XCTAssertEqual(e.behaviourScores(idleCtx(30), now: evening)[.headFootball] ?? 0, 0)
+        e.state.needs.energy = 0.1
+        XCTAssertEqual(e.behaviourScores(idleCtx(30), now: evening)[.readBook] ?? 0, 0)
+    }
+
+    func testEnergeticBoredWeekendFavoursHeadFootball() {
+        var e = makeEngine()
+        e.state.needs.energy = 0.95
+        e.state.needs.boredom = 0.9
+        let now = Date(timeIntervalSince1970: t0 + 5)
+        let weekday = e.behaviourScores(idleCtx(30), now: now)[.headFootball] ?? 0
+        e.setEnv(PetEnvData(weekend: true), now: now)
+        let scores = e.behaviourScores(idleCtx(30), now: now)
+        XCTAssertGreaterThan(scores[.headFootball] ?? 0, weekday)
+        XCTAssertEqual(topBehaviour(scores), PetBehaviour.headFootball)
+        XCTAssertTrue(PetBehaviour.headFootball.isPlay)
+        XCTAssertFalse(PetBehaviour.readBook.isPlay)
+        XCTAssertFalse(PetBehaviour.bored.isPlay)
+    }
+
+    func testBoredWhenNothingElseAppeals() {
+        var e = makeEngine()
+        e.state.needs.energy = 0.12
+        e.state.needs.boredom = 0.95
+        let now = Date(timeIntervalSince1970: t0 + 5)
+        let scores = e.behaviourScores(idleCtx(30), now: now)
+        XCTAssertEqual(scores[.readBook] ?? 0, 0)
+        XCTAssertEqual(scores[.headFootball] ?? 0, 0)
+        XCTAssertEqual(topBehaviour(scores), PetBehaviour.bored)
+        // Low boredom: never bored.
+        e.state.needs.boredom = 0.3
+        XCTAssertEqual(e.behaviourScores(idleCtx(30), now: now)[.bored] ?? 0, 0)
+        // Boredom is not an attention bid: picking it leaves the ladder alone, and interacting gives no make-up.
+        e.state.needs.boredom = 0.95
+        e.state.needs.social = 0
+        e.state.life.behaviour = .bored
+        let out = e.interact(.poke, ctx: idleCtx(), now: Date(timeIntervalSince1970: t0 + 6))
+        XCTAssertFalse(out.contains(.behaviour(.makeUp)))
+        XCTAssertFalse(out.contains(.event(PetEventData(kind: .sulked))))
+        XCTAssertEqual(e.ladder, 0)
+    }
+
+    func testFastTypingAndMeetingsSuppressLeisure() {
+        var e = makeEngine()
+        e.state.needs.energy = 0.95
+        e.state.needs.boredom = 0.95
+        let now = Date(timeIntervalSince1970: t0 + 5)
+        e.setEnv(PetEnvData(weekend: true), now: now)
+        let calm = e.behaviourScores(PetContext(activity: .browsing, idleSeconds: 1, typing: PetTypingRate.none), now: now)
+        let busy = e.behaviourScores(PetContext(activity: .browsing, idleSeconds: 1, typing: .high), now: now)
+        let meeting = e.behaviourScores(PetContext(activity: .meeting, idleSeconds: 30), now: now)
+        XCTAssertGreaterThan(calm[.headFootball] ?? 0, 0)
+        XCTAssertEqual(busy[.headFootball] ?? 0, 0)
+        for b in [PetBehaviour.readBook, .headFootball, .bored] {
+            XCTAssertEqual(busy[b] ?? 0, 0, b.rawValue)
+            XCTAssertEqual(meeting[b] ?? 0, 0, b.rawValue)
+        }
+        // Sleepiness suppresses keepy-uppy.
+        e.state.life.phase = .sleepy
+        XCTAssertEqual(e.behaviourScores(idleCtx(30), now: now)[.headFootball] ?? 0, 0)
+    }
+
+    func testAsleepAllowsNoLeisure() {
+        var e = makeEngine()
+        e.state.needs.energy = 0.6
+        e.state.needs.boredom = 0.95
+        let now = Date(timeIntervalSince1970: t0 + 5)
+        e.setEnv(PetEnvData(weather: PetWeather(condition: .rain), weekend: true), now: now)
+        _ = e.obey(PetObeyData(instruction: .sleep), ctx: idleCtx(), now: now)
+        XCTAssertEqual(e.phase, PetPhase.asleep)
+        let scores = e.behaviourScores(idleCtx(30), now: Date(timeIntervalSince1970: t0 + 6))
+        for b in [PetBehaviour.readBook, .headFootball, .bored] {
+            XCTAssertNil(scores[b], b.rawValue)
+        }
+        run(&e, from: t0 + 6, seconds: 120, idleCtx(30))
+        XCTAssertEqual(e.behaviour, PetBehaviour.sleepCurled)
+    }
+
+    func testLeisureBehavioursDecodeFromRawValues() throws {
+        let data = Data(#"["read_book","head_football","bored"]"#.utf8)
+        let decoded = try JSONDecoder().decode([PetBehaviour].self, from: data)
+        XCTAssertEqual(decoded, [.readBook, .headFootball, .bored])
+    }
+
     func testSleepPressureRisesAwakeAndFallsAsleep() {
         var e = makeEngine()
         let p0 = e.state.needs.sleepPressure

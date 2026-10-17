@@ -133,6 +133,12 @@ public enum PetBehaviour: String, Codable, CaseIterable, Sendable, TolerantStrin
     case attentionBid = "attention_bid"
     case sulk
     case makeUp = "make_up"
+    /// Leisure: sitting with a small book and round glasses.
+    case readBook = "read_book"
+    /// Leisure: keepy-uppy with a little football on its head.
+    case headFootball = "head_football"
+    /// Leisure: nothing appeals and boredom is high. Not an attention bid and not a sulk.
+    case bored
 
     public static var fallback: PetBehaviour { .idleBreathe }
 
@@ -143,10 +149,11 @@ public enum PetBehaviour: String, Codable, CaseIterable, Sendable, TolerantStrin
     /// Energetic play that fast typing, meetings and sleepiness suppress.
     public var isPlay: Bool {
         switch self {
-        case .selfPlay, .chaseCursor, .exploreEdge, .peekWindow, .festiveWiggle:
+        case .selfPlay, .chaseCursor, .exploreEdge, .peekWindow, .festiveWiggle, .headFootball:
             return true
         case .idleBreathe, .lookAtCursor, .watchUserWork, .nap, .sleepCurled, .yawnStretch, .eatSnack,
-             .lookOutWindow, .fanSelf, .hide, .bobToMusic, .curlNearCursor, .attentionBid, .sulk, .makeUp:
+             .lookOutWindow, .fanSelf, .hide, .bobToMusic, .curlNearCursor, .attentionBid, .sulk, .makeUp,
+             .readBook, .bored:
             return false
         }
     }
@@ -170,6 +177,9 @@ public enum PetBehaviour: String, Codable, CaseIterable, Sendable, TolerantStrin
         case .attentionBid: return 6
         case .sulk: return 40
         case .makeUp: return 4
+        case .readBook: return 30
+        case .headFootball: return 14
+        case .bored: return 20
         }
     }
 }
@@ -626,7 +636,8 @@ public struct PetEngine: Sendable {
 
         if resting {
             n.boredom *= exp(-dt / 1800)
-        } else if state.life.behaviour.isPlay || state.life.behaviour == .bobToMusic || state.life.behaviour == .lookOutWindow {
+        } else if state.life.behaviour.isPlay || state.life.behaviour == .bobToMusic || state.life.behaviour == .lookOutWindow
+                    || state.life.behaviour == .readBook {
             n.boredom *= exp(-dt / 300)
         } else {
             let tau = 2700 / (0.5 + traits.curiosity)
@@ -860,6 +871,48 @@ public struct PetEngine: Sendable {
         s[.bobToMusic] = ctx.musicPlaying == true ? 1.3 * (ctx.typing == .high ? 0.6 : 1) : 0
         s[.festiveWiggle] = env?.holiday != nil ? 0.8 * playDamp : 0
         s[.curlNearCursor] = sleepy && ctx.present ? 1.4 : 0
+
+        // Leisure: the user is here and unoccupied (idle, browsing or paused for a while), not in a meeting,
+        // call, video or busy calendar slot, and not typing fast.
+        let leisure = ctx.available && ctx.typing != .high
+            && (ctx.activity == .idle || ctx.activity == .browsing || ctx.idleSeconds >= 120)
+        let weekend = env?.weekend ?? false
+        let evening = hour >= 18 && hour < 23.5
+        let wet = cond == PetWeatherCondition.rain || cond == PetWeatherCondition.snow
+            || cond == PetWeatherCondition.storm || cond == PetWeatherCondition.fog
+
+        // Reading is calm: best at moderate energy, still fine when a little tired, never when exhausted.
+        var book = 0.0
+        if leisure && n.energy >= 0.2 {
+            let calm = 1 - min(1, abs(n.energy - 0.5) * 1.6)
+            book = (0.3 + 0.45 * tr.curiosity) * (0.5 + 0.5 * calm) * (0.6 + 0.6 * n.boredom)
+            if evening { book *= 1.7 }
+            if wet { book *= 1.6 }
+            if sleepy { book *= 0.6 }
+        }
+        s[.readBook] = book
+
+        // Keepy-uppy is energetic play: needs good energy, damped like other play, likelier on weekends.
+        var football = 0.0
+        if leisure && !sleepy && n.energy >= 0.45 {
+            football = (0.15 + n.boredom) * n.energy * playDamp * (weekend ? 1.5 : 1) * 1.1
+        }
+        s[.headFootball] = football
+
+        // Bored: the fallback when boredom is high and nothing more interesting scores well.
+        var boredScore = 0.0
+        if leisure && n.boredom >= 0.6 {
+            let options: [PetBehaviour] = [.selfPlay, .chaseCursor, .exploreEdge, .peekWindow, .readBook, .headFootball,
+                                           .lookOutWindow, .fanSelf, .hide, .bobToMusic, .festiveWiggle, .eatSnack, .nap]
+            var best = 0.0
+            for o in options {
+                best = max(best, s[o] ?? 0)
+            }
+            boredScore = (0.7 + 1.5 * (n.boredom - 0.6)) * max(0.15, 1.3 - best)
+            if sleepy { boredScore *= 0.5 }
+        }
+        s[.bored] = boredScore
+
         // Ladder-driven only.
         s[.attentionBid] = 0
         s[.sulk] = 0
@@ -919,7 +972,7 @@ public struct PetEngine: Sendable {
             queue(.ate, desire: 0.45, ttl: 90, t: t)
         case .idleBreathe, .lookAtCursor, .watchUserWork, .selfPlay, .chaseCursor, .exploreEdge, .peekWindow,
              .sleepCurled, .yawnStretch, .lookOutWindow, .fanSelf, .hide, .bobToMusic, .festiveWiggle,
-             .curlNearCursor, .attentionBid, .sulk, .makeUp:
+             .curlNearCursor, .attentionBid, .sulk, .makeUp, .readBook, .headFootball, .bored:
             setBehaviour(chosen, t: t, out: &out)
         }
     }

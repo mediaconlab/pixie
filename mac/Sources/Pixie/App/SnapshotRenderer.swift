@@ -35,12 +35,30 @@ enum SnapshotRenderer {
             case .curlNearCursor, .yawnStretch: m.setPetPhase(.sleepy)
             case .lookOutWindow: m.windowStyle = .rain
             case .festiveWiggle: m.festive = true
+            case .readBook: m.eveningLight = true
             default: break
             }
             m.setPetBehaviour(b)
             // Two moments of each motion so movement shows.
             write(m, after: 1.2, name: "behaviour-\(b.rawValue)-a", dir: dir)
             write(m, after: 2.1, name: "behaviour-\(b.rawValue)-b", dir: dir)
+        }
+
+        // Moments inside longer motions: a page turn, a missed header and the fetch, a peek between paws,
+        // idle paw tapping, and a sulk once the arms are crossed.
+        let moments: [(PetBehaviour, TimeInterval, String)] = [
+            (.readBook, 6.0, "read_book-page-turn"),
+            (.headFootball, 5.9, "head_football-miss"),
+            (.headFootball, 7.3, "head_football-fetch"),
+            (.hide, 3.0, "hide-peek"),
+            (.bored, 9.0, "bored-tapping"),
+            (.sulk, 1.0, "sulk-hmph"),
+        ]
+        for (b, at, label) in moments {
+            let m = AvatarModel()
+            if b == .readBook { m.eveningLight = true }
+            m.setPetBehaviour(b)
+            write(m, after: at, name: "moment-\(label)", dir: dir)
         }
 
         // Window moods.

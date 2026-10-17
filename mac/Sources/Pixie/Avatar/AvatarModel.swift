@@ -34,6 +34,8 @@ final class AvatarModel: ObservableObject {
     @Published private(set) var cue: PetCue?
     @Published private(set) var cueStart: Date = .distantPast
     @Published var windowStyle: PetWindowStyle = .day
+    /// Evening or night locally: `read_book` gets a warm reading-lamp glow.
+    @Published var eveningLight = false
     @Published var festive = false
     /// True while the panel is fully covered or off-screen: the animation timeline pauses.
     @Published var hidden = false

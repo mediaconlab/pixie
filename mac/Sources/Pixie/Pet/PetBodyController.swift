@@ -288,5 +288,8 @@ final class PetBodyController {
             }
         }
         if avatar.windowStyle != style { avatar.windowStyle = style }
+        let hour = engine.localHour(now)
+        let evening = style == .night || style == .sunset || hour >= 18 || hour < 6
+        if avatar.eveningLight != evening { avatar.eveningLight = evening }
     }
 }

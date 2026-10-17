@@ -24,6 +24,15 @@ struct Pose {
     var faceTurn: Double = 0
     /// Puffed cheeks (sulk / pout), 0 … 1.
     var cheekPuff: Double = 0
+    /// Extra sideways shift of the face, in units of size (− = towards Pixie's left, e.g. the window).
+    var faceShiftX: Double = 0
+    /// Crossed stubby arms (sulk), 0 … 1.
+    var crossedArms: Double = 0
+    /// Paws over the eyes (hide), 0 … 1, and how far the right paw is lowered to peek, 0 … 1.
+    var pawsOverEyes: Double = 0
+    var pawPeek: Double = 0
+    /// Round reading glasses (read_book).
+    var glasses = false
     var props = PetProps()
 
     @MainActor
@@ -215,6 +224,14 @@ struct CharacterFrame: View {
 
     private var s: CGFloat { size }
 
+    /// Face position: gaze, turning away and any sideways shift.
+    private var faceX: CGFloat {
+        let look = CGFloat(pose.lookX) * s * 0.035
+        let turn = CGFloat(pose.faceTurn) * s * 0.3
+        let shift = CGFloat(pose.faceShiftX) * s
+        return look + turn + shift
+    }
+
     var body: some View {
         ZStack {
             // Ground shadow (not transformed with the body, shrinks while airborne).
@@ -224,9 +241,24 @@ struct CharacterFrame: View {
                 .blur(radius: 2)
                 .offset(y: s * 0.53)
 
+            if pose.props.lampGlow {
+                // Evening reading light: a warm glow behind Pixie and a little moon.
+                Ellipse()
+                    .fill(RadialGradient(colors: [Color(red: 1.0, green: 0.84, blue: 0.52).opacity(0.6),
+                                                  Color(red: 1.0, green: 0.80, blue: 0.50).opacity(0)],
+                                         center: .center, startRadius: 0, endRadius: s * 0.62))
+                    .frame(width: s * 1.3, height: s * 1.1)
+                    .offset(y: s * 0.05)
+                Image(systemName: "moon.stars.fill")
+                    .font(.system(size: s * 0.12))
+                    .foregroundStyle(Color(red: 0.95, green: 0.78, blue: 0.35))
+                    .offset(x: -s * 0.48, y: -s * 0.42)
+            }
+
             if let style = pose.props.window {
+                // Beside Pixie (it scoots right while looking out), not behind it.
                 PetWindowView(style: style, time: pose.time, size: s)
-                    .offset(x: -s * 0.36, y: -s * 0.08)
+                    .offset(x: -s * 0.5, y: -s * 0.04)
             }
 
             ZStack {
@@ -245,12 +277,15 @@ struct CharacterFrame: View {
                         .rotationEffect(.degrees(arm), anchor: .bottom)
                         .offset(x: s * 0.43, y: s * 0.02)
                 }
-                // Turning away slides the face round to the side and lets it fade behind the body.
+                if pose.crossedArms > 0.01 {
+                    PixieCrossedArmsView(size: s, color: pose.face.body)
+                        .offset(x: CGFloat(pose.faceTurn) * s * 0.12, y: s * 0.33)
+                        .opacity(min(1, pose.crossedArms * 1.5))
+                }
+                // Turning away slides the face round to the side (it stays fully visible).
                 FaceView(pose: pose, size: s)
                     .scaleEffect(x: CGFloat(1 - 0.45 * pose.faceTurn), y: 1)
-                    .offset(x: CGFloat(pose.lookX) * s * 0.035 + CGFloat(pose.faceTurn) * s * 0.3,
-                            y: s * 0.1 + CGFloat(pose.lookY) * s * 0.02)
-                    .opacity(1 - 0.75 * pose.faceTurn)
+                    .offset(x: faceX, y: s * 0.1 + CGFloat(pose.lookY) * s * 0.02)
             }
             .scaleEffect(x: CGFloat(pose.scaleX), y: CGFloat(pose.scaleY), anchor: .bottom)
             .rotation3DEffect(.degrees(pose.spin), axis: (x: 0, y: 1, z: 0))
@@ -261,7 +296,8 @@ struct CharacterFrame: View {
                 .offset(x: CGFloat(pose.offsetX) * s, y: CGFloat(pose.offsetY) * s)
 
             PetPropsView(props: pose.props, time: pose.time, size: s,
-                         bodyOffset: CGSize(width: CGFloat(pose.offsetX) * s, height: CGFloat(pose.offsetY) * s))
+                         bodyOffset: CGSize(width: CGFloat(pose.offsetX) * s, height: CGFloat(pose.offsetY) * s),
+                         bodyColor: pose.face.body)
 
             BadgesView(size: s, eyeIndicator: eyeIndicator, listening: listening)
         }
@@ -351,6 +387,14 @@ struct FaceView: View {
                 .opacity(f.browOpacity)
             MouthView(curve: f.mouthCurve, open: pose.mouthOpen, width: f.mouthWidth, size: s)
                 .offset(y: s * 0.12)
+            if pose.glasses {
+                PixieGlassesView(size: s)
+                    .offset(y: -s * 0.02)
+            }
+            if pose.pawsOverEyes > 0.01 {
+                PixieEyePawsView(size: s, color: f.body, peek: pose.pawPeek)
+                    .opacity(min(1, pose.pawsOverEyes * 1.5))
+            }
         }
     }
 }
