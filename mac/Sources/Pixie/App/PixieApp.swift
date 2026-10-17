@@ -6,6 +6,7 @@ enum PixieMain {
     @MainActor
     static func main() {
         let app = NSApplication.shared
+        if SnapshotRenderer.runIfRequested() { return }
         let delegate = AppDelegate()
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
